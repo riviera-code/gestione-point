@@ -1,584 +1,517 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  addDoc, 
-  deleteDoc,
-  updateDoc,
-  onSnapshot, 
-  serverTimestamp,
-  query
-} from 'firebase/firestore';
-import { 
-  Clock, 
-  Plus, 
-  Calendar, 
-  CheckCircle, 
-  XCircle,
-  Loader2,
-  ChevronLeft,
-  ChevronRight,
-  X,
-  History,
-  Trash2,
-  Edit2,
-  AlertTriangle,
-  Info
-} from 'lucide-react';
-
-// --- CONFIGURAZIONE FIREBASE ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'bordighera-domani-point';
-
-const START_HOUR = 7;
-const END_HOUR = 20;
-
-// Opzioni orarie (30 min)
-const TIME_OPTIONS = [];
-for (let h = START_HOUR; h <= END_HOUR; h++) {
-  const hour = h.toString().padStart(2, '0');
-  TIME_OPTIONS.push(`${hour}:00`);
-  if (h < END_HOUR) TIME_OPTIONS.push(`${hour}:30`);
-}
-
-const INITIAL_COLLABORATORS = [
-  "ALBANESE A.", "BALDASSARRE M.", "BASSI M.", "BERTAINA F.", "BONAVIA B.", 
-  "BOZZARELLI M.", "DEBENEDETTI F.", "DI VITO M.", "GAZZANO G.", 
-  "GUGLIELMI P.", "MANZONI A.", "MARIELLA M.", "MERLO A.", 
-  "PIANTONI S.", "SCARINGELLA W.", "SILVESTRI S.", "TRUCCHI G.", "ZAGNI M."
-].sort();
-
-const HOURS_GRID = [];
-for (let h = START_HOUR; h < END_HOUR; h++) {
-  HOURS_GRID.push(`${h.toString().padStart(2, '0')}:00`);
-}
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [shifts, setShifts] = useState([]);
-  const [dbVolunteers, setDbVolunteers] = useState([]);
-  const [isPointOpen, setIsPointOpen] = useState(false);
-  
-  // Flusso UI
-  const [modalMode, setModalMode] = useState(null); // 'identity', 'dashboard', 'form', 'manage'
-  const [selectedVolunteer, setSelectedVolunteer] = useState(null);
-  const [notification, setNotification] = useState(null);
-  const [editingShift, setEditingShift] = useState(null);
-  const [newVolunteerInput, setNewVolunteerInput] = useState('');
-  
-  const [currentWeekStart, setCurrentWeekStart] = useState(() => {
-    const d = new Date();
-    const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); 
-    return new Date(d.setDate(diff));
-  });
-
-  const [formData, setFormData] = useState({
-    mode: 'single', // 'single', 'current_week', 'next_week', 'range'
-    date: new Date().toISOString().split('T')[0],
-    startDate: new Date().toISOString().split('T')[0],
-    endDate: new Date().toISOString().split('T')[0],
-    startTime: '09:00',
-    endTime: '12:00'
-  });
-
-  const allVolunteers = useMemo(() => {
-    const combined = [...new Set([...INITIAL_COLLABORATORS, ...dbVolunteers])];
-    return combined.sort();
-  }, [dbVolunteers]);
-
-  // Firebase Auth (Regola 3)
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) { console.error("Auth error:", error); }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Firebase Data (Regola 1)
-  useEffect(() => {
-    if (!user) return;
-    const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
-    const unsubShifts = onSnapshot(shiftsCol, (snap) => {
-      setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    const volCol = collection(db, 'artifacts', appId, 'public', 'data', 'volunteers');
-    const unsubVols = onSnapshot(volCol, (snap) => {
-      setDbVolunteers(snap.docs.map(d => d.data().name).filter(n => !!n));
-    });
-
-    const statusDoc = doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current');
-    const unsubStatus = onSnapshot(statusDoc, (snap) => {
-      if (snap.exists()) setIsPointOpen(snap.data().isOpen);
-    });
-
-    return () => { unsubShifts(); unsubVols(); unsubStatus(); };
-  }, [user]);
-
-  const weekDays = useMemo(() => {
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(currentWeekStart);
-      d.setDate(d.getDate() + i);
-      return d;
-    });
-  }, [currentWeekStart]);
-
-  const getPresencesForHour = (dateStr, hourStartStr) => {
-    const hourInt = parseInt(hourStartStr.split(':')[0]);
-    const hourEndStr = `${(hourInt + 1).toString().padStart(2, '0')}:00`;
-    return shifts.filter(s => s.date === dateStr && s.startTime < hourEndStr && s.endTime > hourStartStr);
-  };
-
-  const showMsg = (text, type = 'info') => {
-    setNotification({ text, type });
-    setTimeout(() => setNotification(null), 3000);
-  };
-
-  const handleSaveShift = async () => {
-    if (!selectedVolunteer) return;
-    if (formData.endTime <= formData.startTime) {
-      showMsg("L'orario di fine deve essere dopo l'inizio.", "warning");
-      return;
-    }
-
-    const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bordighera Domani - Gestione Point</title>
     
-    // Salvataggio nuovo volontario nel DB
-    if (!INITIAL_COLLABORATORS.includes(selectedVolunteer) && !dbVolunteers.includes(selectedVolunteer)) {
-      const volRef = doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', selectedVolunteer.replace(/\s+/g, '_').toLowerCase());
-      await setDoc(volRef, { name: selectedVolunteer });
-    }
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM (UMD) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel per JSX nel browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    let datesToSave = [];
-    if (formData.mode === 'single') datesToSave.push(formData.date);
-    else if (formData.mode === 'current_week' || formData.mode === 'next_week') {
-      const baseDate = new Date();
-      const day = baseDate.getDay();
-      const diff = baseDate.getDate() - day + (day === 0 ? -6 : 1) + (formData.mode === 'next_week' ? 7 : 0);
-      const monday = new Date(baseDate.setDate(diff));
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(monday);
-        d.setDate(d.getDate() + i);
-        datesToSave.push(d.toISOString().split('T')[0]);
-      }
-    } else if (formData.mode === 'range') {
-      let start = new Date(formData.startDate);
-      const end = new Date(formData.endDate);
-      while (start <= end) {
-        datesToSave.push(new Date(start).toISOString().split('T')[0]);
-        start.setDate(start.getDate() + 1);
-      }
-    }
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
 
-    try {
-      if (editingShift) {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', editingShift.id), {
-          date: formData.date,
-          startTime: formData.startTime,
-          endTime: formData.endTime,
-          updatedAt: serverTimestamp()
-        });
-        showMsg("Turno aggiornato.", "success");
-      } else {
-        for (const d of datesToSave) {
-          // Prevenzione doppi inserimenti
-          const isDuplicate = shifts.some(s => s.volunteerName === selectedVolunteer && s.date === d && s.startTime === formData.startTime && s.endTime === formData.endTime);
-          if (!isDuplicate) {
-            await addDoc(shiftsCol, {
-              date: d,
-              startTime: formData.startTime,
-              endTime: formData.endTime,
-              volunteerName: selectedVolunteer,
-              createdAt: serverTimestamp()
-            });
-          }
+    <!-- Script tipo modulo per gestire import moderni da CDN -->
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { 
+            getFirestore, collection, doc, setDoc, addDoc, deleteDoc, 
+            updateDoc, onSnapshot, serverTimestamp, query 
+        } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        const { useState, useEffect, useMemo } = React;
+
+        // --- ICONE INLINE SVG ---
+        const Icons = {
+            Plus: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            ),
+            CheckCircle: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            ),
+            XCircle: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+            ),
+            Loader2: ({ size = 24, className = "" }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+            ),
+            ChevronLeft: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            ),
+            ChevronRight: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            ),
+            X: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            ),
+            History: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v5h5"></path><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"></path></svg>
+            ),
+            Trash2: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+            ),
+            Edit2: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+            ),
+            AlertTriangle: ({ size = 24 }) => (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+            )
+        };
+
+        // --- CONFIGURAZIONE FIREBASE ---
+        // Utilizziamo le variabili d'ambiente globali fornite dal sistema.
+        // Se vuoi pubblicare su GitHub, dovrai inserire qui il tuo oggetto config reale.
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : {
+                apiKey: "IL_TUO_API_KEY",
+                authDomain: "IL_TUO_PROJECT_ID.firebaseapp.com",
+                projectId: "IL_TUO_PROJECT_ID",
+                storageBucket: "IL_TUO_PROJECT_ID.appspot.com",
+                messagingSenderId: "IL_TUO_SENDER_ID",
+                appId: "IL_TUO_APP_ID"
+            };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'bordighera-domani-point';
+
+        const START_HOUR = 7;
+        const END_HOUR = 20;
+
+        const TIME_OPTIONS = [];
+        for (let h = START_HOUR; h <= END_HOUR; h++) {
+            const hour = h.toString().padStart(2, '0');
+            TIME_OPTIONS.push(`${hour}:00`);
+            if (h < END_HOUR) TIME_OPTIONS.push(`${hour}:30`);
         }
-        showMsg("Disponibilità salvata.", "success");
-      }
-      setModalMode('dashboard');
-      setEditingShift(null);
-    } catch (e) { console.error(e); }
-  };
 
-  const deleteShift = async (id) => {
-    try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', id));
-      showMsg("Turno rimosso.", "success");
-    } catch (e) { console.error(e); }
-  };
+        const INITIAL_COLLABORATORS = [
+            "ALBANESE A.", "BALDASSARRE M.", "BASSI M.", "BERTAINA F.", "BONAVIA B.", 
+            "BOZZARELLI M.", "DEBENEDETTI F.", "DI VITO M.", "GAZZANO G.", 
+            "GUGLIELMI P.", "MANZONI A.", "MARIELLA M.", "MERLO A.", 
+            "PIANTONI S.", "SCARINGELLA W.", "SILVESTRI S.", "TRUCCHI G.", "ZAGNI M."
+        ].sort();
 
-  const startEditShift = (shift) => {
-    setEditingShift(shift);
-    setFormData({
-      ...formData,
-      mode: 'single',
-      date: shift.date,
-      startTime: shift.startTime,
-      endTime: shift.endTime
-    });
-    setModalMode('form');
-  };
+        const HOURS_GRID = [];
+        for (let h = START_HOUR; h < END_HOUR; h++) {
+            HOURS_GRID.push(`${h.toString().padStart(2, '0')}:00`);
+        }
 
-  const navigateWeek = (weeks) => {
-    setCurrentWeekStart(prev => {
-      const next = new Date(prev);
-      next.setDate(next.getDate() + (weeks * 7));
-      return next;
-    });
-  };
-
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-white">
-      <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
-    </div>
-  );
-
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20">
-      
-      {notification && (
-        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-[110] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-top duration-300 ${
-          notification.type === 'success' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'
-        }`}>
-          {notification.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> : <CheckCircle className="w-5 h-5" />}
-          <span className="font-bold text-sm uppercase tracking-wider">{notification.text}</span>
-        </div>
-      )}
-
-      {/* HEADER */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 h-20 flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <img src="https://bordigheradomani.it/img/logo.png" alt="Logo" className="h-12" />
-            <div className="hidden sm:block">
-              <h1 className="text-lg font-black text-blue-900 leading-none">Gestione Point</h1>
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-black">Lista Civica</p>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-3">
-             <button 
-              onClick={() => setModalMode('identity')}
-              className="bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all flex items-center gap-2 active:scale-95"
-            >
-              <Plus className="w-4 h-4" /> 
-              <span>Disponibilità</span>
-            </button>
-            <div 
-              className={`h-12 w-12 rounded-full flex items-center justify-center border-2 transition-all cursor-pointer shadow-sm ${isPointOpen ? 'bg-green-50 border-green-500 text-green-600' : 'bg-red-50 border-red-500 text-red-600'}`} 
-              onClick={async () => {
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current'), { isOpen: !isPointOpen, updatedAt: serverTimestamp() }, { merge: true });
-              }}
-            >
-              {isPointOpen ? <CheckCircle className="w-6 h-6" /> : <XCircle className="w-6 h-6" />}
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        
-        {/* NAVIGAZIONE SETTIMANA */}
-        <div className="flex items-center justify-center gap-4 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm max-w-md mx-auto">
-          <button onClick={() => navigateWeek(-1)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 transition-colors"><ChevronLeft /></button>
-          <div className="flex-1 text-center min-w-[180px]">
-            <p className="font-black text-blue-900 text-sm uppercase">
-              {weekDays[0].toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} - {weekDays[6].toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}
-            </p>
-          </div>
-          <button onClick={() => navigateWeek(1)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 transition-colors"><ChevronRight /></button>
-        </div>
-
-        {/* CALENDARIO (UNICA VISTA TIMELINE) */}
-        <div className="bg-white rounded-[32px] border border-slate-100 shadow-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <div className="min-w-[900px]">
-              <div className="grid grid-cols-[80px_repeat(7,1fr)] bg-white sticky top-0 z-10 border-b border-slate-100">
-                <div className="p-4"></div>
-                {weekDays.map((day, i) => (
-                  <div key={i} className="p-4 text-center">
-                    <p className="text-[10px] uppercase font-black tracking-widest text-blue-400">
-                      {day.toLocaleDateString('it-IT', { weekday: 'short' })}
-                    </p>
-                    <p className="text-xl font-black text-blue-600">{day.getDate()}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex flex-col">
-                {HOURS_GRID.map((hourSlot) => (
-                  <div key={hourSlot} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-50 min-h-[75px]">
-                    <div className="flex items-center justify-center text-[11px] font-black text-slate-300 p-4">{hourSlot}</div>
-                    {weekDays.map((day, dayIdx) => {
-                      const dateStr = day.toISOString().split('T')[0];
-                      const activeShifts = getPresencesForHour(dateStr, hourSlot);
-                      const isOverlap = activeShifts.length > 1;
-                      const hasPresence = activeShifts.length > 0;
-                      return (
-                        <div key={dayIdx} className={`p-1 flex items-center justify-center border-l border-slate-50 transition-all ${hasPresence ? '' : 'bg-slate-50/[0.1]'}`}>
-                          {hasPresence && (
-                            <div className={`w-full h-full rounded-2xl flex flex-col items-center justify-center text-center p-2 shadow-sm ${isOverlap ? 'bg-orange-500 text-white' : 'bg-blue-600 text-white'}`}>
-                              {activeShifts.map((s) => {
-                                const nextHour = `${(parseInt(hourSlot)+1).toString().padStart(2, '0')}:00`;
-                                const info = [];
-                                if (s.startTime > hourSlot) info.push(`da ${s.startTime}`);
-                                if (s.endTime < nextHour) info.push(`a ${s.endTime}`);
-                                return (
-                                  <div key={s.id} className="w-full">
-                                    <p className="text-[10px] font-black uppercase tracking-tighter leading-none">{s.volunteerName}</p>
-                                    {info.length > 0 && <p className="text-[8px] font-bold opacity-70 uppercase mt-0.5">{info.join(' ')}</p>}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* MODALE SISTEMA */}
-      {modalMode && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        function App() {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [shifts, setShifts] = useState([]);
+            const [dbVolunteers, setDbVolunteers] = useState([]);
+            const [isPointOpen, setIsPointOpen] = useState(false);
+            const [modalMode, setModalMode] = useState(null);
+            const [selectedVolunteer, setSelectedVolunteer] = useState(null);
+            const [notification, setNotification] = useState(null);
+            const [editingShift, setEditingShift] = useState(null);
+            const [newVolunteerInput, setNewVolunteerInput] = useState('');
             
-            <button onClick={() => setModalMode(null)} className="absolute right-8 top-8 p-3 hover:bg-slate-100 rounded-full text-slate-300 z-50"><X className="w-8 h-8" /></button>
+            const [currentWeekStart, setCurrentWeekStart] = useState(() => {
+                const d = new Date();
+                const day = d.getDay();
+                const diff = d.getDate() - day + (day === 0 ? -6 : 1); 
+                return new Date(d.setDate(diff));
+            });
 
-            {/* STEP 1: IDENTIFICAZIONE (identificazione.jpg) */}
-            {modalMode === 'identity' && (
-              <div className="p-8 md:p-12 overflow-y-auto">
-                <h3 className="text-3xl font-black text-blue-900 uppercase tracking-widest italic text-center mb-10">Identificati</h3>
+            const [formData, setFormData] = useState({
+                mode: 'single',
+                date: new Date().toISOString().split('T')[0],
+                startDate: new Date().toISOString().split('T')[0],
+                endDate: new Date().toISOString().split('T')[0],
+                startTime: '09:00',
+                endTime: '12:00'
+            });
+
+            const allVolunteers = useMemo(() => {
+                const combined = [...new Set([...INITIAL_COLLABORATORS, ...dbVolunteers])];
+                return combined.sort();
+            }, [dbVolunteers]);
+
+            // Effetto per l'autenticazione (Regola 3)
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) { 
+                        console.error("Errore autenticazione:", error); 
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // Effetto per il recupero dati (Regola 1 e 2)
+            useEffect(() => {
+                if (!user) return;
                 
-                {/* Griglia nomi preimpostati (sopra) */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-10">
-                  {allVolunteers.map(v => (
-                    <button 
-                      key={v}
-                      onClick={() => { setSelectedVolunteer(v); setModalMode('dashboard'); }}
-                      className="p-5 text-left rounded-[20px] border border-slate-100 hover:border-blue-200 hover:bg-blue-50/20 transition-all font-black text-[14px] text-slate-800 shadow-sm"
-                    >
-                      {v}
-                    </button>
-                  ))}
+                // Listener per i turni
+                const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
+                const unsubShifts = onSnapshot(shiftsCol, (snap) => {
+                    setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                }, (error) => console.error("Errore shifts snapshot:", error));
+
+                // Listener per i volontari
+                const volCol = collection(db, 'artifacts', appId, 'public', 'data', 'volunteers');
+                const unsubVols = onSnapshot(volCol, (snap) => {
+                    setDbVolunteers(snap.docs.map(d => d.data().name).filter(n => !!n));
+                }, (error) => console.error("Errore volunteers snapshot:", error));
+
+                // Listener per lo stato del point
+                const statusDoc = doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current');
+                const unsubStatus = onSnapshot(statusDoc, (snap) => {
+                    if (snap.exists()) setIsPointOpen(snap.data().isOpen);
+                }, (error) => console.error("Errore status snapshot:", error));
+
+                return () => { unsubShifts(); unsubVols(); unsubStatus(); };
+            }, [user]);
+
+            const weekDays = useMemo(() => {
+                return Array.from({ length: 7 }, (_, i) => {
+                    const d = new Date(currentWeekStart);
+                    d.setDate(d.getDate() + i);
+                    return d;
+                });
+            }, [currentWeekStart]);
+
+            const getPresencesForHour = (dateStr, hourStartStr) => {
+                const hourInt = parseInt(hourStartStr.split(':')[0]);
+                const hourEndStr = `${(hourInt + 1).toString().padStart(2, '0')}:00`;
+                return shifts.filter(s => s.date === dateStr && s.startTime < hourEndStr && s.endTime > hourStartStr);
+            };
+
+            const showMsg = (text, type = 'info') => {
+                setNotification({ text, type });
+                setTimeout(() => setNotification(null), 3000);
+            };
+
+            const handleSaveShift = async () => {
+                if (!selectedVolunteer || !user) return;
+                
+                if (formData.endTime <= formData.startTime) {
+                    showMsg("L'orario di fine deve essere dopo l'inizio.", "warning");
+                    return;
+                }
+
+                const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
+                
+                // Salvataggio volontario nel DB se nuovo
+                if (!INITIAL_COLLABORATORS.includes(selectedVolunteer) && !dbVolunteers.includes(selectedVolunteer)) {
+                    const volRef = doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', selectedVolunteer.replace(/\s+/g, '_').toLowerCase());
+                    await setDoc(volRef, { name: selectedVolunteer });
+                }
+
+                let datesToSave = [];
+                if (formData.mode === 'single') datesToSave.push(formData.date);
+                else if (formData.mode === 'current_week' || formData.mode === 'next_week') {
+                    const baseDate = new Date();
+                    const day = baseDate.getDay();
+                    const diff = baseDate.getDate() - day + (day === 0 ? -6 : 1) + (formData.mode === 'next_week' ? 7 : 0);
+                    const monday = new Date(baseDate.setDate(diff));
+                    for (let i = 0; i < 7; i++) {
+                        const d = new Date(monday);
+                        d.setDate(d.getDate() + i);
+                        datesToSave.push(d.toISOString().split('T')[0]);
+                    }
+                } else if (formData.mode === 'range') {
+                    let start = new Date(formData.startDate);
+                    const end = new Date(formData.endDate);
+                    while (start <= end) {
+                        datesToSave.push(new Date(start).toISOString().split('T')[0]);
+                        start.setDate(start.getDate() + 1);
+                    }
+                }
+
+                try {
+                    if (editingShift) {
+                        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', editingShift.id), {
+                            date: formData.date,
+                            startTime: formData.startTime,
+                            endTime: formData.endTime,
+                            updatedAt: serverTimestamp()
+                        });
+                        showMsg("Turno aggiornato.", "success");
+                    } else {
+                        for (const d of datesToSave) {
+                            const isDuplicate = shifts.some(s => s.volunteerName === selectedVolunteer && s.date === d && s.startTime === formData.startTime && s.endTime === formData.endTime);
+                            if (!isDuplicate) {
+                                await addDoc(shiftsCol, {
+                                    date: d,
+                                    startTime: formData.startTime,
+                                    endTime: formData.endTime,
+                                    volunteerName: selectedVolunteer,
+                                    createdAt: serverTimestamp()
+                                });
+                            }
+                        }
+                        showMsg("Disponibilità salvata.", "success");
+                    }
+                    setModalMode('dashboard');
+                    setEditingShift(null);
+                } catch (e) { console.error(e); }
+            };
+
+            const deleteShift = async (id) => {
+                if (!user) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', id));
+                    showMsg("Turno rimosso.", "success");
+                } catch (e) { console.error(e); }
+            };
+
+            const startEditShift = (shift) => {
+                setEditingShift(shift);
+                setFormData({
+                    ...formData,
+                    mode: 'single',
+                    date: shift.date,
+                    startTime: shift.startTime,
+                    endTime: shift.endTime
+                });
+                setModalMode('form');
+            };
+
+            const navigateWeek = (weeks) => {
+                setCurrentWeekStart(prev => {
+                    const next = new Date(prev);
+                    next.setDate(next.getDate() + (weeks * 7));
+                    return next;
+                });
+            };
+
+            if (loading) return (
+                <div className="flex flex-col items-center justify-center min-h-screen bg-white text-blue-600">
+                    <Icons.Loader2 size={40} className="animate-spin" />
                 </div>
+            );
 
-                {/* Nuovo Collaboratore (sotto) */}
-                <div className="w-full bg-slate-50/50 p-8 rounded-[40px] border border-slate-100">
-                  <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-3 ml-2">Nuovo Collaboratore</p>
-                  <div className="flex gap-3">
-                    <input 
-                      type="text" 
-                      placeholder="Nome Cognome"
-                      className="flex-1 px-8 py-5 rounded-3xl border-2 border-slate-100 focus:border-blue-500 outline-none font-bold text-xl text-slate-800 bg-white"
-                      value={newVolunteerInput}
-                      onChange={(e) => setNewVolunteerInput(e.target.value.toUpperCase())}
-                    />
-                    <button 
-                      disabled={!newVolunteerInput}
-                      onClick={() => { setSelectedVolunteer(newVolunteerInput); setModalMode('dashboard'); }}
-                      className="bg-blue-600 text-white px-10 py-5 rounded-3xl font-black uppercase tracking-widest shadow-xl shadow-blue-200 hover:bg-blue-700 disabled:opacity-30 transition-all"
-                    >
-                      Inizia
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* STEP 2: DASHBOARD (benvenuto bertaina f.jpg) */}
-            {modalMode === 'dashboard' && (
-              <div className="p-12 flex flex-col items-center justify-center space-y-8 text-center">
-                <div>
-                  <p className="text-slate-300 text-[10px] uppercase font-black tracking-widest mb-2">Benvenuto</p>
-                  <h3 className="text-5xl font-black text-blue-900 italic tracking-tighter uppercase">{selectedVolunteer}</h3>
-                </div>
-
-                <div className="w-full space-y-4 pt-8">
-                  <button 
-                    onClick={() => { setEditingShift(null); setModalMode('form'); }}
-                    className="w-full bg-blue-600 text-white p-10 rounded-[40px] flex items-center gap-6 shadow-2xl shadow-blue-100 hover:bg-blue-700 transition-all active:scale-95 group text-left"
-                  >
-                    <div className="h-16 w-16 bg-white/20 rounded-2xl flex items-center justify-center"><Plus className="w-8 h-8" /></div>
-                    <div>
-                      <p className="text-xl font-black uppercase tracking-tight">Nuovo Orario</p>
-                      <p className="text-sm opacity-70 font-bold">Pianifica disponibilità</p>
-                    </div>
-                  </button>
-
-                  <button 
-                    onClick={() => setModalMode('manage')}
-                    className="w-full bg-[#0d121f] text-white p-10 rounded-[40px] flex items-center gap-6 shadow-2xl hover:bg-[#161d31] transition-all active:scale-95 text-left"
-                  >
-                    <div className="h-16 w-16 bg-white/10 rounded-2xl flex items-center justify-center"><History className="w-8 h-8" /></div>
-                    <div>
-                      <p className="text-xl font-black uppercase tracking-tight">I miei turni</p>
-                      <p className="text-sm opacity-50 font-bold">Gestione e cronologia</p>
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* STEP 3: FORM (nuovo orario 15.43.27.jpg) */}
-            {modalMode === 'form' && (
-              <div className="p-12 overflow-y-auto">
-                <div className="text-left mb-8">
-                   <h3 className="text-4xl font-black text-blue-900 uppercase italic tracking-tighter">Nuovo Orario</h3>
-                   <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Pianifica la tua presenza al point</p>
-                </div>
-
-                <div className="space-y-10">
-                  {!editingShift && (
-                    <div className="space-y-6">
-                      <p className="text-center font-black text-[10px] uppercase tracking-widest text-slate-400">Come vuoi inserire?</p>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        {[
-                          { id: 'single', label: 'Giorno Singolo' }, { id: 'current_week', label: 'Settimana Ora' },
-                          { id: 'next_week', label: 'Settimana Pross.' }, { id: 'range', label: 'Intervallo' }
-                        ].map(m => (
-                          <button 
-                            key={m.id}
-                            onClick={() => setFormData({...formData, mode: m.id})}
-                            className={`p-5 rounded-2xl border-2 font-black uppercase text-[10px] tracking-tighter transition-all ${formData.mode === m.id ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-50 bg-slate-50/50 text-slate-400'}`}
-                          >
-                            {m.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* INFO BOX DINAMICO */}
-                  <div className="bg-slate-50/50 p-10 rounded-[40px] border border-slate-100 flex items-center justify-center text-center">
-                    <p className="text-blue-600 font-black text-lg max-w-xs">
-                      {formData.mode === 'single' ? "L'orario verrà applicato al giorno selezionato." : 
-                       formData.mode === 'current_week' ? "L'orario verrà applicato a tutta la settimana in corso." :
-                       formData.mode === 'next_week' ? "L'orario verrà applicato a tutta la settimana prossima." : 
-                       "L'orario verrà applicato all'intervallo di date selezionato."}
-                    </p>
-                  </div>
-
-                  <div className="space-y-8">
-                    {/* SELEZIONE DATE */}
-                    {(formData.mode === 'single' || editingShift) && (
-                      <div className="bg-slate-50 p-2 rounded-3xl"><input type="date" className="w-full p-6 rounded-[24px] border-2 border-slate-100 font-bold bg-white text-blue-900 text-xl" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} /></div>
+            return (
+                <div className="min-h-screen pb-20">
+                    {notification && (
+                        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-[110] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce ${
+                            notification.type === 'success' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'
+                        }`}>
+                            {notification.type === 'warning' ? <Icons.AlertTriangle size={20} /> : <Icons.CheckCircle size={20} />}
+                            <span className="font-bold text-sm uppercase">{notification.text}</span>
+                        </div>
                     )}
-                    {formData.mode === 'range' && !editingShift && (
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-slate-50 p-2 rounded-3xl"><input type="date" className="w-full p-6 rounded-[24px] border-2 border-slate-100 font-bold bg-white text-blue-900 text-lg" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} /></div>
-                        <div className="bg-slate-50 p-2 rounded-3xl"><input type="date" className="w-full p-6 rounded-[24px] border-2 border-slate-100 font-bold bg-white text-blue-900 text-lg" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} /></div>
-                      </div>
+
+                    <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+                        <div className="max-w-7xl mx-auto px-4 h-20 flex justify-between items-center">
+                            <div className="flex items-center gap-4">
+                                <img src="https://bordigheradomani.it/img/logo.png" alt="Logo" className="h-12" />
+                                <div className="hidden sm:block">
+                                    <h1 className="text-lg font-black text-blue-900 leading-none">Gestione Point</h1>
+                                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-black">Lista Civica</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={() => setModalMode('identity')} className="bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl hover:bg-blue-700 flex items-center gap-2 active:scale-95">
+                                    <Icons.Plus size={16} /> <span>Disponibilità</span>
+                                </button>
+                                <div className={`h-12 w-12 rounded-full flex items-center justify-center border-2 cursor-pointer shadow-sm ${isPointOpen ? 'bg-green-50 border-green-500 text-green-600' : 'bg-red-50 border-red-500 text-red-600'}`} onClick={async () => {
+                                    if (!user) return;
+                                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current'), { isOpen: !isPointOpen, updatedAt: serverTimestamp() }, { merge: true });
+                                }}>
+                                    {isPointOpen ? <Icons.CheckCircle size={24} /> : <Icons.XCircle size={24} />}
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+                        <div className="flex items-center justify-center gap-4 bg-white p-3 rounded-2xl border border-slate-200 shadow-sm max-w-md mx-auto">
+                            <button onClick={() => navigateWeek(-1)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400"><Icons.ChevronLeft /></button>
+                            <div className="flex-1 text-center min-w-[180px]">
+                                <p className="font-black text-blue-900 text-sm uppercase">
+                                    {weekDays[0].toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} - {weekDays[6].toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}
+                                </p>
+                            </div>
+                            <button onClick={() => navigateWeek(1)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400"><Icons.ChevronRight /></button>
+                        </div>
+
+                        <div className="bg-white rounded-[32px] border border-slate-100 shadow-2xl overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <div className="min-w-[900px]">
+                                    <div className="grid grid-cols-[80px_repeat(7,1fr)] bg-white sticky top-0 z-10 border-b border-slate-100 font-bold">
+                                        <div className="p-4"></div>
+                                        {weekDays.map((day, i) => (
+                                            <div key={i} className="p-4 text-center">
+                                                <p className="text-[10px] uppercase font-black tracking-widest text-blue-400">
+                                                    {day.toLocaleDateString('it-IT', { weekday: 'short' })}
+                                                </p>
+                                                <p className="text-xl font-black text-blue-600">{day.getDate()}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex flex-col">
+                                        {HOURS_GRID.map((hourSlot) => (
+                                            <div key={hourSlot} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-50 min-h-[75px]">
+                                                <div className="flex items-center justify-center text-[11px] font-black text-slate-300 p-4">{hourSlot}</div>
+                                                {weekDays.map((day, dayIdx) => {
+                                                    const dateStr = day.toISOString().split('T')[0];
+                                                    const activeShifts = getPresencesForHour(dateStr, hourSlot);
+                                                    const isOverlap = activeShifts.length > 1;
+                                                    const hasPresence = activeShifts.length > 0;
+                                                    return (
+                                                        <div key={dayIdx} className={`p-1 flex items-center justify-center border-l border-slate-50`}>
+                                                            {hasPresence && (
+                                                                <div className={`w-full h-full rounded-2xl flex flex-col items-center justify-center text-center p-2 shadow-sm ${isOverlap ? 'bg-orange-500 text-white' : 'bg-blue-600 text-white'}`}>
+                                                                    {activeShifts.map((s) => (
+                                                                        <div key={s.id} className="w-full">
+                                                                            <p className="text-[10px] font-black uppercase tracking-tighter leading-none">{s.volunteerName}</p>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+
+                    {/* Modale - Identificazione e Form */}
+                    {modalMode && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                            <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
+                                <button onClick={() => setModalMode(null)} className="absolute right-6 top-6 p-2 text-slate-300 hover:text-slate-600"><Icons.X size={32} /></button>
+                                
+                                {modalMode === 'identity' && (
+                                    <div className="p-8 md:p-12 overflow-y-auto">
+                                        <h3 className="text-3xl font-black text-blue-900 uppercase italic text-center mb-10">Identificati</h3>
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-10">
+                                            {allVolunteers.map(v => (
+                                                <button key={v} onClick={() => { setSelectedVolunteer(v); setModalMode('dashboard'); }} className="p-4 text-left rounded-[20px] border border-slate-100 hover:bg-blue-50 font-black text-sm text-slate-800 shadow-sm">{v}</button>
+                                            ))}
+                                        </div>
+                                        <div className="bg-slate-50 p-6 rounded-[32px] flex gap-3">
+                                            <input type="text" placeholder="NUOVO NOME" className="flex-1 px-6 py-4 rounded-2xl border-2 border-slate-100 outline-none font-bold" value={newVolunteerInput} onChange={(e) => setNewVolunteerInput(e.target.value.toUpperCase())} />
+                                            <button disabled={!newVolunteerInput} onClick={() => { setSelectedVolunteer(newVolunteerInput); setModalMode('dashboard'); }} className="bg-blue-600 text-white px-8 rounded-2xl font-black disabled:opacity-30">VAI</button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {modalMode === 'dashboard' && (
+                                    <div className="p-12 flex flex-col items-center gap-8 text-center">
+                                        <h3 className="text-4xl font-black text-blue-900 uppercase italic">{selectedVolunteer}</h3>
+                                        <div className="w-full space-y-4">
+                                            <button onClick={() => { setEditingShift(null); setModalMode('form'); }} className="w-full bg-blue-600 text-white p-8 rounded-[32px] flex items-center gap-6 shadow-xl hover:bg-blue-700 transition-transform active:scale-95 text-left">
+                                                <div className="bg-white/20 p-4 rounded-xl"><Icons.Plus /></div>
+                                                <div><p className="font-black uppercase">Nuovo Orario</p><p className="text-xs opacity-70">Aggiungi disponibilità</p></div>
+                                            </button>
+                                            <button onClick={() => setModalMode('manage')} className="w-full bg-slate-900 text-white p-8 rounded-[32px] flex items-center gap-6 shadow-xl hover:bg-slate-800 transition-transform active:scale-95 text-left">
+                                                <div className="bg-white/10 p-4 rounded-xl"><Icons.History /></div>
+                                                <div><p className="font-black uppercase">I miei turni</p><p className="text-xs opacity-50">Modifica o elimina</p></div>
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {modalMode === 'form' && (
+                                    <div className="p-10 overflow-y-auto space-y-8">
+                                        <h3 className="text-3xl font-black text-blue-900 uppercase italic">Pianifica Orario</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            {['single', 'current_week', 'next_week', 'range'].map(m => (
+                                                <button key={m} onClick={() => setFormData({...formData, mode: m})} className={`p-4 rounded-xl border-2 font-black text-[10px] uppercase ${formData.mode === m ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-100 text-slate-400'}`}>
+                                                    {m === 'single' ? 'Giorno Singolo' : m === 'range' ? 'Intervallo' : 'Settimana'}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <div className="space-y-4">
+                                            {(formData.mode === 'single' || editingShift) && (
+                                                <input type="date" className="w-full p-4 rounded-xl border-2 font-bold text-blue-900" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+                                            )}
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <select className="p-4 rounded-xl border-2 font-black" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})}>
+                                                    {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                </select>
+                                                <select className="p-4 rounded-xl border-2 font-black" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})}>
+                                                    {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-4">
+                                            <button onClick={() => setModalMode('dashboard')} className="flex-1 font-black text-slate-300">ANNULLA</button>
+                                            <button onClick={handleSaveShift} className="flex-[2] bg-green-600 text-white py-4 rounded-xl font-black uppercase">CONFERMA</button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {modalMode === 'manage' && (
+                                    <div className="p-10 flex flex-col h-full overflow-hidden">
+                                        <h3 className="text-2xl font-black text-blue-900 uppercase italic mb-6">I Tuoi Turni</h3>
+                                        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar">
+                                            {shifts.filter(s => s.volunteerName === selectedVolunteer).length === 0 ? (
+                                                <p className="text-center py-10 text-slate-300 font-bold">Nessun turno trovato.</p>
+                                            ) : (
+                                                shifts.filter(s => s.volunteerName === selectedVolunteer).sort((a,b) => b.date.localeCompare(a.date)).map(s => (
+                                                    <div key={s.id} className="bg-slate-50 p-4 rounded-2xl flex items-center justify-between border border-slate-100">
+                                                        <div className="flex items-center gap-4">
+                                                            <div className="bg-blue-600 text-white p-2 rounded-lg text-center min-w-[50px]">
+                                                                <p className="text-[10px] font-bold leading-none">{new Date(s.date).toLocaleDateString('it-IT', { weekday: 'short' })}</p>
+                                                                <p className="text-lg font-black">{new Date(s.date).getDate()}</p>
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-sm font-black text-slate-800">{s.startTime} - {s.endTime}</p>
+                                                                <p className="text-[10px] text-slate-400 font-bold uppercase">{new Date(s.date).toLocaleDateString('it-IT', { month: 'short' })}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex gap-1">
+                                                            <button onClick={() => startEditShift(s)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg"><Icons.Edit2 size={18} /></button>
+                                                            <button onClick={() => deleteShift(s.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg"><Icons.Trash2 size={18} /></button>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     )}
 
-                    {/* SELEZIONE ORARI */}
-                    <div className="grid grid-cols-2 gap-8">
-                      <div>
-                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 ml-4 block">Dalle Ore</label>
-                        <div className="bg-slate-50 p-2 rounded-[40px]">
-                           <select className="w-full p-8 rounded-[32px] border-2 border-slate-100 font-black text-3xl text-blue-900 bg-white shadow-sm appearance-none text-center" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})}>
-                            {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 ml-4 block">Alle Ore</label>
-                        <div className="bg-slate-50 p-2 rounded-[40px]">
-                           <select className="w-full p-8 rounded-[32px] border-2 border-slate-100 font-black text-3xl text-blue-900 bg-white shadow-sm appearance-none text-center" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})}>
-                            {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-4">
-                    <button onClick={() => setModalMode('dashboard')} className="flex-1 py-6 font-black text-slate-300 uppercase tracking-widest">Indietro</button>
-                    <button onClick={handleSaveShift} className="flex-[2] bg-green-600 text-white py-6 rounded-3xl font-black uppercase tracking-widest shadow-xl shadow-green-100">
-                      {editingShift ? 'Salva' : 'Conferma'}
-                    </button>
-                  </div>
+                    <footer className="max-w-7xl mx-auto px-4 mt-12 text-center text-slate-300 text-[10px] py-12 border-t border-slate-200 uppercase tracking-widest font-black">
+                        <p>Bordighera Domani - Point Elettorale 2024</p>
+                    </footer>
                 </div>
-              </div>
-            )}
+            );
+        }
 
-            {/* STEP 4: GESTIONE (I MIEI TURNI) */}
-            {modalMode === 'manage' && (
-              <div className="p-10 flex flex-col h-full overflow-hidden">
-                <div className="flex justify-between items-center mb-8">
-                  <h3 className="text-2xl font-black text-blue-900 uppercase italic italic">I Tuoi Turni</h3>
-                  <button onClick={() => setModalMode('dashboard')} className="bg-slate-100 px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest">Chiudi</button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-                  {shifts.filter(s => s.volunteerName === selectedVolunteer).sort((a,b) => b.date.localeCompare(a.date)).length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 text-slate-200">
-                      <History className="w-16 h-16 mb-4 opacity-20" />
-                      <p className="font-bold italic">Nessun turno inserito.</p>
-                    </div>
-                  ) : (
-                    shifts.filter(s => s.volunteerName === selectedVolunteer)
-                    .sort((a,b) => b.date.localeCompare(a.date))
-                    .map(s => (
-                      <div key={s.id} className="bg-slate-50 p-6 rounded-[28px] flex items-center justify-between border border-slate-100 group">
-                        <div className="flex items-center gap-5">
-                          <div className="h-14 w-14 bg-blue-600 text-white rounded-2xl flex flex-col items-center justify-center shadow-lg shadow-blue-100">
-                            <span className="text-[10px] font-black leading-none uppercase">{new Date(s.date).toLocaleDateString('it-IT', { weekday: 'short' })}</span>
-                            <span className="text-lg font-black">{new Date(s.date).getDate()}</span>
-                          </div>
-                          <div>
-                            <p className="text-xs text-slate-400 font-black uppercase tracking-wider">{new Date(s.date).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}</p>
-                            <p className="text-lg font-black text-slate-800">{s.startTime} — {s.endTime}</p>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button onClick={() => startEditShift(s)} className="p-3 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition-colors"><Edit2 className="w-5 h-5" /></button>
-                          <button onClick={() => deleteShift(s.id)} className="p-3 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors"><Trash2 className="w-5 h-5" /></button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-      )}
-
-      <footer className="max-w-7xl mx-auto px-4 mt-12 text-center text-slate-200 text-[10px] py-12 border-t border-slate-200/50 uppercase tracking-[0.3em] font-black">
-        <p>Bordighera Domani - Point Elettorale 2024</p>
-      </footer>
-    </div>
-  );
-}
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
