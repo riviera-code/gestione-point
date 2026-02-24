@@ -20,11 +20,8 @@
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Espongo API per React
         window.FirebaseSDK = { initializeApp, getApps, getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, getFirestore, collection, addDoc, onSnapshot, query, deleteDoc, doc, updateDoc };
-        // Segnale di pronto per l'app
         window.__firebaseReady = true;
-        // Evento custom per notificare React nel caso il caricamento sia asincrono
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -53,7 +50,6 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo, useRef } = React;
 
-        // Componente Icona con normalizzazione nomi
         const Icon = ({ name, size = 18, className = "" }) => {
             const ref = useRef(null);
             const normalized = String(name)
@@ -74,7 +70,6 @@
             return <span ref={ref} className="inline-flex items-center justify-center" />;
         };
 
-        // --- CONFIGURAZIONE PROGETTO ---
         const firebaseConfig = {
             apiKey: "AIzaSyAqPyYWhSkO3WsADTSqFttiX97h774h3jc",
             authDomain: "point-bordighera-domani.firebaseapp.com",
@@ -128,59 +123,39 @@
             const [bulkMode, setBulkMode] = useState('single');
             const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
 
-            // Inizializzazione Firebase & Auth
             useEffect(() => {
                 let unsub = null;
-
                 const initFirebase = async () => {
                     try {
-                        // Attendiamo che l'SDK sia disponibile
                         if (!window.__firebaseReady) {
                             await new Promise(resolve => window.addEventListener('firebase-ready', resolve, { once: true }));
                         }
-                        
                         const { initializeApp, getApps, getAuth, onAuthStateChanged, signInAnonymously } = window.FirebaseSDK;
-
                         const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
                         window.__firebaseApp = app;
-
                         const auth = getAuth(app);
-
-                        // Eseguiamo l'accesso
                         await signInAnonymously(auth);
-                        console.log("Accesso eseguito con successo.");
-                        
                         unsub = onAuthStateChanged(auth, (u) => {
-                            console.log("Stato Auth cambiato:", u ? "Loggato" : "Non loggato");
                             setUser(u);
-                            // IMPORTANTE: sblocchiamo il loading non appena abbiamo una risposta dall'auth
                             setLoading(false);
                         });
                     } catch (err) {
-                        console.error("Errore critico Firebase:", err);
-                        setLoading(false); // Sblocca la UI per mostrare l'errore
-                        setStatusMsg({ type: "error", text: "Errore di connessione al database." });
+                        console.error(err);
+                        setLoading(false);
                     }
                 };
-
                 initFirebase();
                 return () => { if (unsub) unsub(); };
             }, []);
 
-            // Recupero Dati Firestore
             useEffect(() => {
                 if (!user || !window.__firebaseApp) return;
-                
                 const { getFirestore, collection, onSnapshot } = window.FirebaseSDK;
                 const db = getFirestore(window.__firebaseApp);
                 const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'availabilities');
-                
                 const unsubscribe = onSnapshot(collRef, (snapshot) => {
                     setAvailabilities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-                }, (err) => {
-                    console.error("Errore Firestore:", err);
                 });
-                
                 return () => unsubscribe();
             }, [user]);
 
@@ -224,63 +199,6 @@
                 return { gaps, perc };
             }, [coverageMap, weekDays]);
 
-            const handleAdminAuth = (e) => {
-                e.preventDefault();
-                if (passInput === 'ppppp') {
-                    setView('admin');
-                    setPassError(false);
-                    setPassInput("");
-                } else {
-                    setPassError(true);
-                }
-            };
-
-            const handleSaveTurn = async () => {
-                if (!user || !selectedCandidate || !window.__firebaseApp) return;
-                if (formStartH >= formEndH) {
-                    setStatusMsg({ type: 'error', text: "L'ora di fine deve essere dopo l'ora di inizio." });
-                    return;
-                }
-                try {
-                    const { getFirestore, collection, addDoc } = window.FirebaseSDK;
-                    const db = getFirestore(window.__firebaseApp);
-                    const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'availabilities');
-                    let datesToInsert = [];
-                    if (bulkMode === 'single') {
-                        datesToInsert = [formDate];
-                    } else {
-                        const baseMonday = bulkMode === 'current_week' ? todayMonday : getMonday(new Date(new Date(todayMonday).setDate(todayMonday.getDate() + 7)));
-                        for (let i = 0; i < 7; i++) {
-                            const d = new Date(baseMonday);
-                            d.setDate(d.getDate() + i);
-                            datesToInsert.push(formatDateLocal(d));
-                        }
-                    }
-                    for (const dStr of datesToInsert) {
-                        await addDoc(collRef, {
-                            userId: user.uid,
-                            userName: String(selectedCandidate),
-                            date: dStr,
-                            start: Number(formStartH),
-                            end: Number(formEndH),
-                            timestamp: Date.now()
-                        });
-                    }
-                    setStatusMsg({ type: 'success', text: "Operazione completata!" });
-                    setTimeout(() => { setView('main'); setStatusMsg({ type: '', text: '' }); }, 1500);
-                } catch (err) { 
-                    console.error(err);
-                    setStatusMsg({ type: 'error', text: "Errore nel salvataggio." }); 
-                }
-            };
-
-            const handleDelete = async (id) => {
-                if (!user || !window.__firebaseApp) return;
-                const { getFirestore, doc, deleteDoc } = window.FirebaseSDK;
-                const db = getFirestore(window.__firebaseApp);
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'availabilities', id));
-            };
-
             const changeWeek = (offset) => {
                 const newMonday = new Date(currentWeekStart);
                 newMonday.setDate(newMonday.getDate() + offset);
@@ -307,14 +225,10 @@
 
             if (loading) return (
                 <div className="flex items-center justify-center min-h-screen">
-                    <div className="text-center">
-                        <p className="text-slate-400 font-medium animate-pulse mb-4">Connessione a Firebase...</p>
-                        {statusMsg.text && <p className="text-red-500 text-xs font-bold uppercase">{statusMsg.text}</p>}
-                    </div>
+                    <p className="text-slate-400 font-medium animate-pulse">Connessione a Firebase...</p>
                 </div>
             );
 
-            // LOGICA DELLE VISTE
             if (view === 'admin_auth') {
                 return (
                     <div className="min-h-screen bg-slate-50 font-strategic flex flex-col">
@@ -326,7 +240,7 @@
                                 </div>
                                 <h2 className="text-2xl font-black uppercase italic tracking-tighter mb-2">Area Riservata</h2>
                                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-10">Inserisci la password di amministrazione</p>
-                                <form onSubmit={handleAdminAuth} className="space-y-4">
+                                <form onSubmit={(e) => { e.preventDefault(); if(passInput === 'ppppp') setView('admin'); else setPassError(true); }} className="space-y-4">
                                     <input type="password" autoFocus placeholder="••••••" value={passInput} onChange={(e) => setPassInput(e.target.value)} className={`w-full px-6 py-4 bg-slate-50 border-2 rounded-2xl text-center text-xl font-bold outline-none transition-all ${passError ? 'border-red-200 focus:border-red-500' : 'border-slate-100 focus:border-blue-500'}`} />
                                     {passError && <p className="text-[9px] font-black text-red-500 uppercase">Password Errata</p>}
                                     <button type="submit" className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg">Sblocca Accesso</button>
@@ -406,31 +320,69 @@
                                             ))}
                                         </div>
                                     ) : (
-                                        <div>
-                                             <div className="flex p-4 border-b border-slate-100 bg-white overflow-x-auto no-scrollbar gap-2 mb-4">
-                                                {weekDays.map(day => (
-                                                    <button key={day.dateStr} onClick={() => setActiveDayMobile(day.dateStr)} className={`flex flex-col items-center justify-center min-w-[54px] h-16 rounded-2xl transition-all border-2 ${activeDayMobile === day.dateStr ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-50 bg-slate-50 text-slate-400'}`}>
-                                                        <span className="text-[8px] font-black uppercase mb-1">{day.shortLabel}</span><span className="text-base font-bold font-data">{day.dayNum}</span>
-                                                    </button>
-                                                ))}
+                                        <>
+                                            {/* VISUALIZZAZIONE DESKTOP (TABELLA ORIZZONTALE) */}
+                                            <div className="hidden lg:block overflow-x-auto no-scrollbar">
+                                                <table className="w-full border-collapse">
+                                                    <thead>
+                                                        <tr className="bg-slate-50/50">
+                                                            <th className="p-4 border-b border-r border-slate-100 w-24"></th>
+                                                            {weekDays.map(day => <th key={day.dateStr} className="p-4 text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-100 min-w-[140px]">{day.label}<span className="block text-[14px] text-blue-600 font-data">{day.dayNum}</span></th>)}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {HOURS.map(hour => (
+                                                            <tr key={hour}>
+                                                                <td className="p-3 text-[10px] font-black text-slate-400 border-r border-slate-100 text-center bg-slate-50/30 font-data">{hour}:00</td>
+                                                                {weekDays.map(day => {
+                                                                    const present = coverageMap[day.dateStr]?.[hour] || [];
+                                                                    const isGap = present.length === 0;
+                                                                    const isOverlap = present.length > 1;
+                                                                    return (
+                                                                        <td key={day.dateStr} className="p-1 border border-slate-50 group h-20 relative">
+                                                                            <div className={`w-full h-full rounded-xl transition-all p-2 flex flex-col justify-center items-center gap-0.5
+                                                                            ${isGap ? 'bg-red-50/20' : isOverlap ? 'bg-amber-500 text-white shadow-md' : 'bg-blue-600 text-white shadow-sm'}`}>
+                                                                                {present.slice(0, 2).map((p, idx) => (
+                                                                                    <span key={idx} className="text-[9px] font-black uppercase tracking-tighter truncate w-full text-center leading-none">{String(p.userName)}</span>
+                                                                                ))}
+                                                                                {present.length > 2 && <span className="text-[7px] font-bold bg-black/10 px-1.5 py-0.5 rounded-full uppercase">+{present.length - 2}</span>}
+                                                                            </div>
+                                                                        </td>
+                                                                    );
+                                                                })}
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
                                             </div>
-                                            <div className="space-y-1">
-                                                {HOURS.map(hour => {
-                                                    const present = coverageMap[activeDayMobile]?.[hour] || [];
-                                                    const isGap = present.length === 0;
-                                                    return (
-                                                        <div key={hour} className="flex gap-4">
-                                                            <div className="w-10 pt-2 text-[10px] font-black text-slate-400 font-data">{hour}:00</div>
-                                                            <div className="flex-1 pb-1">
-                                                                <div className={`w-full min-h-[50px] rounded-xl p-3 flex flex-wrap items-center gap-2 border ${isGap ? 'bg-red-50/30 border-red-100 border-dashed' : 'bg-blue-600 text-white border-transparent'}`}>
-                                                                    {isGap ? <span className="text-[9px] font-bold uppercase text-red-200 italic">Libero</span> : present.map((p, idx) => <span key={idx} className="text-[10px] font-black bg-black/10 px-2 py-1 rounded-lg uppercase">{String(p.userName)}</span>)}
+
+                                            {/* VISUALIZZAZIONE MOBILE */}
+                                            <div className="lg:hidden">
+                                                <div className="flex p-4 border-b border-slate-100 bg-white overflow-x-auto no-scrollbar gap-2 mb-4">
+                                                    {weekDays.map(day => (
+                                                        <button key={day.dateStr} onClick={() => setActiveDayMobile(day.dateStr)} className={`flex flex-col items-center justify-center min-w-[54px] h-16 rounded-2xl transition-all border-2 ${activeDayMobile === day.dateStr ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-slate-50 bg-slate-50 text-slate-400'}`}>
+                                                            <span className="text-[8px] font-black uppercase mb-1">{day.shortLabel}</span><span className="text-base font-bold font-data">{day.dayNum}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div className="space-y-1">
+                                                    {HOURS.map(hour => {
+                                                        const present = coverageMap[activeDayMobile]?.[hour] || [];
+                                                        const isGap = present.length === 0;
+                                                        return (
+                                                            <div key={hour} className="flex gap-4">
+                                                                <div className="w-10 pt-2 text-[10px] font-black text-slate-400 font-data">{hour}:00</div>
+                                                                <div className="flex-1 pb-1">
+                                                                    <div className={`w-full min-h-[50px] rounded-xl p-3 flex flex-wrap items-center gap-2 border ${isGap ? 'bg-red-50/30 border-red-100 border-dashed' : 'bg-blue-600 text-white border-transparent'}`}>
+                                                                        {isGap ? <span className="text-[9px] font-bold uppercase text-red-200 italic">Libero</span> : present.map((p, idx) => <span key={idx} className="text-[10px] font-black bg-black/10 px-2 py-1 rounded-lg uppercase">{String(p.userName)}</span>)}
+                                                                    </div>
                                                                 </div>
                                                             </div>
-                                                        </div>
-                                                    );
-                                                })}
+                                                        );
+                                                    })}
+                                                </div>
                                             </div>
-                                        </div>
+                                        </>
                                     )}
                                 </div>
                             </section>
@@ -541,11 +493,6 @@
                                             </select>
                                         </div>
                                     </div>
-                                    {statusMsg.text && (
-                                        <div className={`p-4 rounded-xl text-[10px] font-bold uppercase text-center ${statusMsg.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
-                                            {statusMsg.text}
-                                        </div>
-                                    )}
                                     <button onClick={handleSaveTurn} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg hover:bg-blue-700 transition-all">Conferma Orario</button>
                                 </div>
                             </div>
@@ -555,9 +502,7 @@
             }
 
             if (view === 'my_turns' || view === 'admin') {
-                const turns = view === 'admin' 
-                    ? availabilities 
-                    : availabilities.filter(a => a.userName === selectedCandidate);
+                const turns = view === 'admin' ? availabilities : availabilities.filter(a => a.userName === selectedCandidate);
                 turns.sort((a, b) => b.timestamp - a.timestamp);
                 return (
                     <div className="min-h-screen bg-slate-50 font-strategic">
@@ -567,9 +512,7 @@
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-slate-100 space-y-6">
                                 <h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-900">{view === 'admin' ? 'Database Point' : 'I Tuoi Orari'}</h2>
                                 <div className="space-y-3">
-                                    {turns.length === 0 ? (
-                                        <p className="text-center py-10 text-slate-300 font-bold uppercase text-[10px]">Nessun dato registrato</p>
-                                    ) : turns.map(t => (
+                                    {turns.length === 0 ? <p className="text-center py-10 text-slate-300 font-bold uppercase text-[10px]">Nessun dato registrato</p> : turns.map(t => (
                                         <div key={t.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between">
                                             <div>
                                                 <p className="text-xs font-black uppercase">{t.userName} - {new Date(t.date).toLocaleDateString('it-IT')}</p>
@@ -584,7 +527,6 @@
                     </div>
                 );
             }
-
             return null;
         }
 
