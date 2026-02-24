@@ -26,7 +26,6 @@
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
-    <!-- Script tipo modulo per gestire import moderni da CDN -->
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
@@ -37,7 +36,6 @@
 
         const { useState, useEffect, useMemo } = React;
 
-        // --- ICONE INLINE SVG ---
         const Icons = {
             Plus: ({ size = 24 }) => (
                 <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -74,18 +72,15 @@
             )
         };
 
-        // --- CONFIGURAZIONE FIREBASE ---
-        // Utilizziamo le variabili d'ambiente globali fornite dal sistema.
-        // Se vuoi pubblicare su GitHub, dovrai inserire qui il tuo oggetto config reale.
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : {
-                apiKey: "IL_TUO_API_KEY",
-                authDomain: "IL_TUO_PROJECT_ID.firebaseapp.com",
-                projectId: "IL_TUO_PROJECT_ID",
-                storageBucket: "IL_TUO_PROJECT_ID.appspot.com",
-                messagingSenderId: "IL_TUO_SENDER_ID",
-                appId: "IL_TUO_APP_ID"
+                apiKey: "", 
+                authDomain: "",
+                projectId: "",
+                storageBucket: "",
+                messagingSenderId: "",
+                appId: ""
             };
 
         const app = initializeApp(firebaseConfig);
@@ -118,6 +113,7 @@
         function App() {
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
+            const [saving, setSaving] = useState(false);
             const [shifts, setShifts] = useState([]);
             const [dbVolunteers, setDbVolunteers] = useState([]);
             const [isPointOpen, setIsPointOpen] = useState(false);
@@ -148,7 +144,6 @@
                 return combined.sort();
             }, [dbVolunteers]);
 
-            // Effetto per l'autenticazione (Regola 3)
             useEffect(() => {
                 const initAuth = async () => {
                     try {
@@ -158,7 +153,7 @@
                             await signInAnonymously(auth);
                         }
                     } catch (error) { 
-                        console.error("Errore autenticazione:", error); 
+                        console.error("Auth Error:", error); 
                     }
                 };
                 initAuth();
@@ -169,27 +164,23 @@
                 return () => unsubscribe();
             }, []);
 
-            // Effetto per il recupero dati (Regola 1 e 2)
             useEffect(() => {
                 if (!user) return;
                 
-                // Listener per i turni
                 const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
                 const unsubShifts = onSnapshot(shiftsCol, (snap) => {
                     setShifts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-                }, (error) => console.error("Errore shifts snapshot:", error));
+                }, (err) => console.error("Snapshot error:", err));
 
-                // Listener per i volontari
                 const volCol = collection(db, 'artifacts', appId, 'public', 'data', 'volunteers');
                 const unsubVols = onSnapshot(volCol, (snap) => {
                     setDbVolunteers(snap.docs.map(d => d.data().name).filter(n => !!n));
-                }, (error) => console.error("Errore volunteers snapshot:", error));
+                }, (err) => console.error("Snapshot error:", err));
 
-                // Listener per lo stato del point
                 const statusDoc = doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current');
                 const unsubStatus = onSnapshot(statusDoc, (snap) => {
                     if (snap.exists()) setIsPointOpen(snap.data().isOpen);
-                }, (error) => console.error("Errore status snapshot:", error));
+                }, (err) => console.error("Snapshot error:", err));
 
                 return () => { unsubShifts(); unsubVols(); unsubStatus(); };
             }, [user]);
@@ -210,47 +201,54 @@
 
             const showMsg = (text, type = 'info') => {
                 setNotification({ text, type });
-                setTimeout(() => setNotification(null), 3000);
+                setTimeout(() => setNotification(null), 4000);
             };
 
             const handleSaveShift = async () => {
-                if (!selectedVolunteer || !user) return;
-                
+                if (!selectedVolunteer) {
+                    showMsg("Identificati prima di salvare.", "warning");
+                    return;
+                }
+                if (!user) {
+                    showMsg("Connessione al database non pronta.", "warning");
+                    return;
+                }
                 if (formData.endTime <= formData.startTime) {
                     showMsg("L'orario di fine deve essere dopo l'inizio.", "warning");
                     return;
                 }
 
-                const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
-                
-                // Salvataggio volontario nel DB se nuovo
-                if (!INITIAL_COLLABORATORS.includes(selectedVolunteer) && !dbVolunteers.includes(selectedVolunteer)) {
-                    const volRef = doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', selectedVolunteer.replace(/\s+/g, '_').toLowerCase());
-                    await setDoc(volRef, { name: selectedVolunteer });
-                }
-
-                let datesToSave = [];
-                if (formData.mode === 'single') datesToSave.push(formData.date);
-                else if (formData.mode === 'current_week' || formData.mode === 'next_week') {
-                    const baseDate = new Date();
-                    const day = baseDate.getDay();
-                    const diff = baseDate.getDate() - day + (day === 0 ? -6 : 1) + (formData.mode === 'next_week' ? 7 : 0);
-                    const monday = new Date(baseDate.setDate(diff));
-                    for (let i = 0; i < 7; i++) {
-                        const d = new Date(monday);
-                        d.setDate(d.getDate() + i);
-                        datesToSave.push(d.toISOString().split('T')[0]);
-                    }
-                } else if (formData.mode === 'range') {
-                    let start = new Date(formData.startDate);
-                    const end = new Date(formData.endDate);
-                    while (start <= end) {
-                        datesToSave.push(new Date(start).toISOString().split('T')[0]);
-                        start.setDate(start.getDate() + 1);
-                    }
-                }
-
+                setSaving(true);
                 try {
+                    const shiftsCol = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
+                    
+                    if (!INITIAL_COLLABORATORS.includes(selectedVolunteer) && !dbVolunteers.includes(selectedVolunteer)) {
+                        const volRef = doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', selectedVolunteer.replace(/\s+/g, '_').toLowerCase());
+                        await setDoc(volRef, { name: selectedVolunteer });
+                    }
+
+                    let datesToSave = [];
+                    if (formData.mode === 'single') {
+                        datesToSave.push(formData.date);
+                    } else if (formData.mode === 'current_week' || formData.mode === 'next_week') {
+                        const d = new Date();
+                        const day = d.getDay();
+                        const diff = d.getDate() - day + (day === 0 ? -6 : 1) + (formData.mode === 'next_week' ? 7 : 0);
+                        const monday = new Date(d.setDate(diff));
+                        for (let i = 0; i < 7; i++) {
+                            const date = new Date(monday);
+                            date.setDate(date.getDate() + i);
+                            datesToSave.push(date.toISOString().split('T')[0]);
+                        }
+                    } else if (formData.mode === 'range') {
+                        let start = new Date(formData.startDate);
+                        const end = new Date(formData.endDate);
+                        while (start <= end) {
+                            datesToSave.push(new Date(start).toISOString().split('T')[0]);
+                            start.setDate(start.getDate() + 1);
+                        }
+                    }
+
                     if (editingShift) {
                         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', editingShift.id), {
                             date: formData.date,
@@ -258,7 +256,7 @@
                             endTime: formData.endTime,
                             updatedAt: serverTimestamp()
                         });
-                        showMsg("Turno aggiornato.", "success");
+                        showMsg("Turno aggiornato con successo!", "success");
                     } else {
                         for (const d of datesToSave) {
                             const isDuplicate = shifts.some(s => s.volunteerName === selectedVolunteer && s.date === d && s.startTime === formData.startTime && s.endTime === formData.endTime);
@@ -272,11 +270,16 @@
                                 });
                             }
                         }
-                        showMsg("Disponibilità salvata.", "success");
+                        showMsg("Orario salvato correttamente!", "success");
                     }
                     setModalMode('dashboard');
                     setEditingShift(null);
-                } catch (e) { console.error(e); }
+                } catch (e) { 
+                    console.error(e); 
+                    showMsg("Errore durante il salvataggio. Riprova.", "warning");
+                } finally {
+                    setSaving(false);
+                }
             };
 
             const deleteShift = async (id) => {
@@ -316,11 +319,11 @@
             return (
                 <div className="min-h-screen pb-20">
                     {notification && (
-                        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-[110] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce ${
-                            notification.type === 'success' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white'
+                        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-[200] px-6 py-4 rounded-3xl shadow-2xl flex items-center gap-4 animate-bounce border-2 ${
+                            notification.type === 'success' ? 'bg-green-600 border-green-400 text-white' : 'bg-amber-500 border-amber-300 text-white'
                         }`}>
-                            {notification.type === 'warning' ? <Icons.AlertTriangle size={20} /> : <Icons.CheckCircle size={20} />}
-                            <span className="font-bold text-sm uppercase">{notification.text}</span>
+                            {notification.type === 'warning' ? <Icons.AlertTriangle size={24} /> : <Icons.CheckCircle size={24} />}
+                            <span className="font-black text-sm uppercase tracking-tight">{notification.text}</span>
                         </div>
                     )}
 
@@ -334,10 +337,10 @@
                                 </div>
                             </div>
                             <div className="flex items-center gap-3">
-                                <button onClick={() => setModalMode('identity')} className="bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl hover:bg-blue-700 flex items-center gap-2 active:scale-95">
-                                    <Icons.Plus size={16} /> <span>Disponibilità</span>
+                                <button onClick={() => setModalMode('identity')} className="bg-blue-600 text-white px-5 py-3 rounded-2xl font-black text-sm shadow-xl hover:bg-blue-700 flex items-center gap-2 active:scale-95 transition-all">
+                                    <Icons.Plus size={16} /> <span>Aggiungi Disponibilità</span>
                                 </button>
-                                <div className={`h-12 w-12 rounded-full flex items-center justify-center border-2 cursor-pointer shadow-sm ${isPointOpen ? 'bg-green-50 border-green-500 text-green-600' : 'bg-red-50 border-red-500 text-red-600'}`} onClick={async () => {
+                                <div className={`h-12 w-12 rounded-full flex items-center justify-center border-2 cursor-pointer shadow-sm transition-all ${isPointOpen ? 'bg-green-50 border-green-500 text-green-600' : 'bg-red-50 border-red-500 text-red-600'}`} onClick={async () => {
                                     if (!user) return;
                                     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'status', 'current'), { isOpen: !isPointOpen, updatedAt: serverTimestamp() }, { merge: true });
                                 }}>
@@ -358,8 +361,8 @@
                             <button onClick={() => navigateWeek(1)} className="p-2 hover:bg-slate-100 rounded-xl text-slate-400"><Icons.ChevronRight /></button>
                         </div>
 
-                        <div className="bg-white rounded-[32px] border border-slate-100 shadow-2xl overflow-hidden">
-                            <div className="overflow-x-auto">
+                        <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl overflow-hidden">
+                            <div className="overflow-x-auto custom-scrollbar">
                                 <div className="min-w-[900px]">
                                     <div className="grid grid-cols-[80px_repeat(7,1fr)] bg-white sticky top-0 z-10 border-b border-slate-100 font-bold">
                                         <div className="p-4"></div>
@@ -374,7 +377,7 @@
                                     </div>
                                     <div className="flex flex-col">
                                         {HOURS_GRID.map((hourSlot) => (
-                                            <div key={hourSlot} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-50 min-h-[75px]">
+                                            <div key={hourSlot} className="grid grid-cols-[80px_repeat(7,1fr)] border-b border-slate-50 min-h-[85px]">
                                                 <div className="flex items-center justify-center text-[11px] font-black text-slate-300 p-4">{hourSlot}</div>
                                                 {weekDays.map((day, dayIdx) => {
                                                     const dateStr = day.toISOString().split('T')[0];
@@ -382,12 +385,12 @@
                                                     const isOverlap = activeShifts.length > 1;
                                                     const hasPresence = activeShifts.length > 0;
                                                     return (
-                                                        <div key={dayIdx} className={`p-1 flex items-center justify-center border-l border-slate-50`}>
+                                                        <div key={dayIdx} className={`p-1.5 flex items-center justify-center border-l border-slate-50`}>
                                                             {hasPresence && (
-                                                                <div className={`w-full h-full rounded-2xl flex flex-col items-center justify-center text-center p-2 shadow-sm ${isOverlap ? 'bg-orange-500 text-white' : 'bg-blue-600 text-white'}`}>
+                                                                <div className={`w-full h-full rounded-[22px] flex flex-col items-center justify-center text-center p-2 shadow-sm transition-all hover:scale-[1.02] ${isOverlap ? 'bg-orange-500 text-white' : 'bg-blue-600 text-white'}`}>
                                                                     {activeShifts.map((s) => (
                                                                         <div key={s.id} className="w-full">
-                                                                            <p className="text-[10px] font-black uppercase tracking-tighter leading-none">{s.volunteerName}</p>
+                                                                            <p className="text-[10px] font-black uppercase tracking-tighter leading-tight">{s.volunteerName}</p>
                                                                         </div>
                                                                     ))}
                                                                 </div>
@@ -403,95 +406,145 @@
                         </div>
                     </main>
 
-                    {/* Modale - Identificazione e Form */}
                     {modalMode && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                            <div className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
-                                <button onClick={() => setModalMode(null)} className="absolute right-6 top-6 p-2 text-slate-300 hover:text-slate-600"><Icons.X size={32} /></button>
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-md">
+                            <div className="bg-white w-full max-w-2xl rounded-[48px] shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
+                                <button onClick={() => setModalMode(null)} className="absolute right-8 top-8 p-3 text-slate-300 hover:text-slate-600 transition-colors z-[110]"><Icons.X size={32} /></button>
                                 
                                 {modalMode === 'identity' && (
-                                    <div className="p-8 md:p-12 overflow-y-auto">
-                                        <h3 className="text-3xl font-black text-blue-900 uppercase italic text-center mb-10">Identificati</h3>
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-10">
+                                    <div className="p-8 md:p-14 overflow-y-auto">
+                                        <h3 className="text-3xl font-black text-blue-900 uppercase italic text-center mb-10 tracking-tight">Chi sta operando?</h3>
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-12">
                                             {allVolunteers.map(v => (
-                                                <button key={v} onClick={() => { setSelectedVolunteer(v); setModalMode('dashboard'); }} className="p-4 text-left rounded-[20px] border border-slate-100 hover:bg-blue-50 font-black text-sm text-slate-800 shadow-sm">{v}</button>
+                                                <button key={v} onClick={() => { setSelectedVolunteer(v); setModalMode('dashboard'); }} className="p-4 text-center rounded-[24px] border border-slate-100 hover:bg-blue-600 hover:text-white font-black text-[13px] text-slate-800 shadow-sm transition-all">{v}</button>
                                             ))}
                                         </div>
-                                        <div className="bg-slate-50 p-6 rounded-[32px] flex gap-3">
-                                            <input type="text" placeholder="NUOVO NOME" className="flex-1 px-6 py-4 rounded-2xl border-2 border-slate-100 outline-none font-bold" value={newVolunteerInput} onChange={(e) => setNewVolunteerInput(e.target.value.toUpperCase())} />
-                                            <button disabled={!newVolunteerInput} onClick={() => { setSelectedVolunteer(newVolunteerInput); setModalMode('dashboard'); }} className="bg-blue-600 text-white px-8 rounded-2xl font-black disabled:opacity-30">VAI</button>
+                                        <div className="bg-slate-50 p-8 rounded-[40px] flex flex-col gap-4 border border-slate-100">
+                                            <p className="text-[10px] font-black uppercase text-slate-400 ml-4 tracking-widest">Aggiungi Nuovo Collaboratore</p>
+                                            <div className="flex gap-3">
+                                                <input type="text" placeholder="NOME E COGNOME" className="flex-1 px-6 py-5 rounded-2xl border-2 border-slate-200 outline-none font-bold text-slate-700 bg-white focus:border-blue-500 transition-all" value={newVolunteerInput} onChange={(e) => setNewVolunteerInput(e.target.value.toUpperCase())} />
+                                                <button disabled={!newVolunteerInput} onClick={() => { setSelectedVolunteer(newVolunteerInput); setModalMode('dashboard'); }} className="bg-blue-600 text-white px-8 rounded-2xl font-black disabled:opacity-30 uppercase">VAI</button>
+                                            </div>
                                         </div>
                                     </div>
                                 )}
 
                                 {modalMode === 'dashboard' && (
-                                    <div className="p-12 flex flex-col items-center gap-8 text-center">
-                                        <h3 className="text-4xl font-black text-blue-900 uppercase italic">{selectedVolunteer}</h3>
-                                        <div className="w-full space-y-4">
-                                            <button onClick={() => { setEditingShift(null); setModalMode('form'); }} className="w-full bg-blue-600 text-white p-8 rounded-[32px] flex items-center gap-6 shadow-xl hover:bg-blue-700 transition-transform active:scale-95 text-left">
-                                                <div className="bg-white/20 p-4 rounded-xl"><Icons.Plus /></div>
-                                                <div><p className="font-black uppercase">Nuovo Orario</p><p className="text-xs opacity-70">Aggiungi disponibilità</p></div>
+                                    <div className="p-14 flex flex-col items-center gap-10 text-center">
+                                        <div className="space-y-2">
+                                            <p className="text-slate-400 font-black uppercase text-[10px] tracking-[0.2em]">Pannello di</p>
+                                            <h3 className="text-5xl font-black text-blue-900 uppercase italic tracking-tighter">{selectedVolunteer}</h3>
+                                        </div>
+                                        <div className="w-full space-y-5">
+                                            <button onClick={() => { setEditingShift(null); setModalMode('form'); }} className="w-full bg-blue-600 text-white p-10 rounded-[40px] flex items-center gap-8 shadow-2xl hover:bg-blue-700 transition-all active:scale-95 text-left group">
+                                                <div className="bg-white/20 p-5 rounded-2xl group-hover:scale-110 transition-transform"><Icons.Plus size={32} /></div>
+                                                <div><p className="text-xl font-black uppercase tracking-tight">Inserisci Disponibilità</p><p className="text-sm opacity-70 font-bold uppercase tracking-widest">Pianifica nuovi turni</p></div>
                                             </button>
-                                            <button onClick={() => setModalMode('manage')} className="w-full bg-slate-900 text-white p-8 rounded-[32px] flex items-center gap-6 shadow-xl hover:bg-slate-800 transition-transform active:scale-95 text-left">
-                                                <div className="bg-white/10 p-4 rounded-xl"><Icons.History /></div>
-                                                <div><p className="font-black uppercase">I miei turni</p><p className="text-xs opacity-50">Modifica o elimina</p></div>
+                                            <button onClick={() => setModalMode('manage')} className="w-full bg-[#0d121f] text-white p-10 rounded-[40px] flex items-center gap-8 shadow-2xl hover:bg-slate-800 transition-all active:scale-95 text-left group">
+                                                <div className="bg-white/10 p-5 rounded-2xl group-hover:scale-110 transition-transform"><Icons.History size={32} /></div>
+                                                <div><p className="text-xl font-black uppercase tracking-tight">I miei turni</p><p className="text-sm opacity-50 font-bold uppercase tracking-widest">Modifica o elimina</p></div>
                                             </button>
                                         </div>
                                     </div>
                                 )}
 
                                 {modalMode === 'form' && (
-                                    <div className="p-10 overflow-y-auto space-y-8">
-                                        <h3 className="text-3xl font-black text-blue-900 uppercase italic">Pianifica Orario</h3>
+                                    <div className="p-10 md:p-14 overflow-y-auto space-y-10">
+                                        <div className="space-y-2">
+                                            <h3 className="text-3xl font-black text-blue-900 uppercase italic tracking-tight">Nuova Pianificazione</h3>
+                                            <p className="text-slate-400 font-bold text-xs uppercase">Scegli come inserire la tua presenza</p>
+                                        </div>
+                                        
                                         <div className="grid grid-cols-2 gap-4">
-                                            {['single', 'current_week', 'next_week', 'range'].map(m => (
-                                                <button key={m} onClick={() => setFormData({...formData, mode: m})} className={`p-4 rounded-xl border-2 font-black text-[10px] uppercase ${formData.mode === m ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-100 text-slate-400'}`}>
-                                                    {m === 'single' ? 'Giorno Singolo' : m === 'range' ? 'Intervallo' : 'Settimana'}
+                                            {[
+                                                { id: 'single', label: 'Singolo Giorno' }, 
+                                                { id: 'current_week', label: 'Tutta la Settimana' }, 
+                                                { id: 'next_week', label: 'Settimana Prossima' }, 
+                                                { id: 'range', label: 'Periodo' }
+                                            ].map(m => (
+                                                <button key={m.id} onClick={() => setFormData({...formData, mode: m.id})} className={`p-5 rounded-[24px] border-2 font-black text-[11px] uppercase tracking-tighter transition-all ${formData.mode === m.id ? 'border-blue-600 bg-blue-600 text-white shadow-lg' : 'border-slate-50 bg-slate-50/50 text-slate-400 hover:border-slate-200'}`}>
+                                                    {m.label}
                                                 </button>
                                             ))}
                                         </div>
-                                        <div className="space-y-4">
+
+                                        <div className="space-y-6">
                                             {(formData.mode === 'single' || editingShift) && (
-                                                <input type="date" className="w-full p-4 rounded-xl border-2 font-bold text-blue-900" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+                                                <div className="space-y-2">
+                                                    <label className="text-[10px] font-black uppercase text-slate-400 ml-4">Data Selezionata</label>
+                                                    <input type="date" className="w-full p-6 rounded-3xl border-2 border-slate-100 font-bold text-blue-900 text-xl bg-slate-50 focus:bg-white transition-all outline-none" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+                                                </div>
                                             )}
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <select className="p-4 rounded-xl border-2 font-black" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})}>
-                                                    {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                                </select>
-                                                <select className="p-4 rounded-xl border-2 font-black" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})}>
-                                                    {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                                                </select>
+                                            {formData.mode === 'range' && (
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-2">
+                                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-4">Inizio</label>
+                                                        <input type="date" className="w-full p-5 rounded-2xl border-2 border-slate-100 font-bold text-blue-900" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} />
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        <label className="text-[10px] font-black uppercase text-slate-400 ml-4">Fine</label>
+                                                        <input type="date" className="w-full p-5 rounded-2xl border-2 border-slate-100 font-bold text-blue-900" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} />
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="grid grid-cols-2 gap-6">
+                                                <div className="space-y-2">
+                                                    <label className="text-[10px] font-black uppercase text-slate-400 ml-4">Dalle Ore</label>
+                                                    <select className="w-full p-6 rounded-3xl border-2 border-slate-100 font-black text-2xl text-blue-900 bg-slate-50 appearance-none text-center outline-none" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})}>
+                                                        {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                    </select>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <label className="text-[10px] font-black uppercase text-slate-400 ml-4">Alle Ore</label>
+                                                    <select className="w-full p-6 rounded-3xl border-2 border-slate-100 font-black text-2xl text-blue-900 bg-slate-50 appearance-none text-center outline-none" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})}>
+                                                        {TIME_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                    </select>
+                                                </div>
                                             </div>
                                         </div>
-                                        <div className="flex gap-4">
-                                            <button onClick={() => setModalMode('dashboard')} className="flex-1 font-black text-slate-300">ANNULLA</button>
-                                            <button onClick={handleSaveShift} className="flex-[2] bg-green-600 text-white py-4 rounded-xl font-black uppercase">CONFERMA</button>
+
+                                        <div className="flex gap-4 pt-4">
+                                            <button onClick={() => setModalMode('dashboard')} className="flex-1 font-black text-slate-300 uppercase tracking-widest text-xs py-6">INDIETRO</button>
+                                            <button 
+                                                disabled={saving}
+                                                onClick={handleSaveShift} 
+                                                className="flex-[2] bg-green-600 text-white py-6 rounded-3xl font-black uppercase tracking-widest shadow-xl shadow-green-100 hover:bg-green-700 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+                                            >
+                                                {saving ? <Icons.Loader2 className="animate-spin" /> : null}
+                                                {editingShift ? 'AGGIORNA' : 'CONFERMA'}
+                                            </button>
                                         </div>
                                     </div>
                                 )}
 
                                 {modalMode === 'manage' && (
-                                    <div className="p-10 flex flex-col h-full overflow-hidden">
-                                        <h3 className="text-2xl font-black text-blue-900 uppercase italic mb-6">I Tuoi Turni</h3>
-                                        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar">
+                                    <div className="p-10 md:p-14 flex flex-col h-full overflow-hidden">
+                                        <div className="flex justify-between items-center mb-8">
+                                            <h3 className="text-2xl font-black text-blue-900 uppercase italic">I Tuoi Turni</h3>
+                                            <button onClick={() => setModalMode('dashboard')} className="bg-slate-100 px-6 py-2 rounded-full font-black text-[10px] uppercase">CHIUDI</button>
+                                        </div>
+                                        <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
                                             {shifts.filter(s => s.volunteerName === selectedVolunteer).length === 0 ? (
-                                                <p className="text-center py-10 text-slate-300 font-bold">Nessun turno trovato.</p>
+                                                <div className="flex flex-col items-center justify-center py-20 text-slate-200">
+                                                    <Icons.History size={64} className="mb-4 opacity-10" />
+                                                    <p className="font-bold italic">Nessun turno trovato nel database.</p>
+                                                </div>
                                             ) : (
                                                 shifts.filter(s => s.volunteerName === selectedVolunteer).sort((a,b) => b.date.localeCompare(a.date)).map(s => (
-                                                    <div key={s.id} className="bg-slate-50 p-4 rounded-2xl flex items-center justify-between border border-slate-100">
-                                                        <div className="flex items-center gap-4">
-                                                            <div className="bg-blue-600 text-white p-2 rounded-lg text-center min-w-[50px]">
-                                                                <p className="text-[10px] font-bold leading-none">{new Date(s.date).toLocaleDateString('it-IT', { weekday: 'short' })}</p>
-                                                                <p className="text-lg font-black">{new Date(s.date).getDate()}</p>
+                                                    <div key={s.id} className="bg-slate-50 p-6 rounded-[32px] flex items-center justify-between border border-slate-100 hover:bg-white hover:shadow-lg transition-all">
+                                                        <div className="flex items-center gap-6">
+                                                            <div className="bg-blue-600 text-white p-3 rounded-2xl text-center min-w-[60px] shadow-lg shadow-blue-100">
+                                                                <p className="text-[10px] font-bold leading-none uppercase">{new Date(s.date).toLocaleDateString('it-IT', { weekday: 'short' })}</p>
+                                                                <p className="text-xl font-black">{new Date(s.date).getDate()}</p>
                                                             </div>
                                                             <div>
-                                                                <p className="text-sm font-black text-slate-800">{s.startTime} - {s.endTime}</p>
-                                                                <p className="text-[10px] text-slate-400 font-bold uppercase">{new Date(s.date).toLocaleDateString('it-IT', { month: 'short' })}</p>
+                                                                <p className="text-lg font-black text-slate-800 leading-tight">{s.startTime} — {s.endTime}</p>
+                                                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{new Date(s.date).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}</p>
                                                             </div>
                                                         </div>
-                                                        <div className="flex gap-1">
-                                                            <button onClick={() => startEditShift(s)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg"><Icons.Edit2 size={18} /></button>
-                                                            <button onClick={() => deleteShift(s.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg"><Icons.Trash2 size={18} /></button>
+                                                        <div className="flex gap-2">
+                                                            <button onClick={() => startEditShift(s)} className="p-3 text-blue-600 hover:bg-blue-100 rounded-xl transition-colors"><Icons.Edit2 size={20} /></button>
+                                                            <button onClick={() => deleteShift(s.id)} className="p-3 text-red-600 hover:bg-red-100 rounded-xl transition-colors"><Icons.Trash2 size={20} /></button>
                                                         </div>
                                                     </div>
                                                 ))
@@ -503,8 +556,8 @@
                         </div>
                     )}
 
-                    <footer className="max-w-7xl mx-auto px-4 mt-12 text-center text-slate-300 text-[10px] py-12 border-t border-slate-200 uppercase tracking-widest font-black">
-                        <p>Bordighera Domani - Point Elettorale 2024</p>
+                    <footer className="max-w-7xl mx-auto px-4 mt-12 text-center text-slate-300 text-[10px] py-12 border-t border-slate-200 uppercase tracking-[0.3em] font-black">
+                        <p>Bordighera Domani - Sistema Point 2024</p>
                     </footer>
                 </div>
             );
