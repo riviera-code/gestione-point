@@ -35,39 +35,60 @@
         @keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .animate-fade { animation: fade-in 0.4s ease-out forwards; }
         
-        /* Pulse for loading */
         .pulse-soft { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
     </style>
 </head>
 <body class="bg-slate-50">
     <div id="root">
-        <div class="flex items-center justify-center min-h-screen">
-            <p class="text-slate-400 font-medium pulse-soft">Inizializzazione sistema...</p>
+        <div class="flex flex-col items-center justify-center min-h-screen">
+            <p class="text-slate-400 font-medium pulse-soft italic">Caricamento sistema...</p>
         </div>
     </div>
 
     <script type="text/babel">
         const { useState, useEffect, useMemo, useRef } = React;
 
-        // Componente Icona Migliorato
+        // --- UTILITY PER DATE (Fix Timezone Bug) ---
+        const parseLocalDate = (dateStr) => {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            return new Date(y, m - 1, d);
+        };
+
+        const formatLocalDate = (dateObj) => {
+            const year = dateObj.getFullYear();
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const getMonday = (d) => {
+            const date = new Date(d);
+            date.setHours(0, 0, 0, 0);
+            const day = date.getDay();
+            const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+            return new Date(date.setDate(diff));
+        };
+
+        const getDatesInRange = (startDateStr, endDateStr) => {
+            const dates = [];
+            let curr = parseLocalDate(startDateStr);
+            const last = parseLocalDate(endDateStr);
+            while (curr <= last) {
+                dates.push(formatLocalDate(new Date(curr)));
+                curr.setDate(curr.getDate() + 1);
+            }
+            return dates;
+        };
+
+        // --- COMPONENTI UI CORE ---
         const Icon = ({ name, size = 18, className = "" }) => {
-            const normalized = String(name)
-                .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-                .replace(/_/g, "-")
-                .toLowerCase();
-
+            const normalized = String(name).replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/_/g, "-").toLowerCase();
             const LucideIcon = window.lucide?.icons?.[normalized] || window.lucide?.icons?.[name.toLowerCase()];
-            
-            if (!LucideIcon) return <span className="w-5 h-5 block"></span>;
-
+            if (!LucideIcon) return <span className="w-5 h-5 inline-block"></span>;
             return (
                 <span className={`inline-flex items-center justify-center ${className}`}>
-                    {React.createElement(LucideIcon, { 
-                        strokeWidth: 2.5, 
-                        width: size, 
-                        height: size
-                    })}
+                    {React.createElement(LucideIcon, { strokeWidth: 2.5, width: size, height: size })}
                 </span>
             );
         };
@@ -89,6 +110,7 @@
             </header>
         );
 
+        // --- CONFIGURAZIONE ---
         const firebaseConfig = {
             apiKey: "AIzaSyAqPyYWhSkO3WsADTSqFttiX97h774h3jc",
             authDomain: "point-bordighera-domani.firebaseapp.com",
@@ -97,44 +119,9 @@
             messagingSenderId: "4645778433",
             appId: "1:4645778433:web:8a06fe4286130e3f3dbc00"
         };
-
         const appId = 'point-bordighera-domani';
         const HOURS = Array.from({ length: 14 }, (_, i) => i + 7); // 07:00 - 20:00
-        const INITIAL_CANDIDATES = [
-            "Bassi M.", "Albanese A.", "Baldassarre M.", "Debenedetti F.",
-            "Piantoni S.", "Mariella M.", "Zagni M.", "Bertaina F.",
-            "Bonavia B.", "Di Vito M.", "Bozzarelli M.", "Gazzano G."
-        ];
-
-        // Formattazione data locale sicura (evita slittamenti di fuso orario)
-        const formatDateLocal = (date) => {
-            const d = new Date(date);
-            const year = d.getFullYear();
-            const month = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        };
-
-        const getMonday = (d) => {
-            const date = new Date(d);
-            date.setHours(0, 0, 0, 0);
-            const day = date.getDay();
-            const diff = date.getDate() - day + (day === 0 ? -6 : 1);
-            return new Date(date.setDate(diff));
-        };
-
-        const getDatesInRange = (startDate, endDate) => {
-            const dates = [];
-            let curr = new Date(startDate);
-            const last = new Date(endDate);
-            curr.setHours(0,0,0,0);
-            last.setHours(0,0,0,0);
-            while (curr <= last) {
-                dates.push(formatDateLocal(new Date(curr)));
-                curr.setDate(curr.getDate() + 1);
-            }
-            return dates;
-        };
+        const INITIAL_CANDIDATES = ["Bassi M.", "Albanese A.", "Baldassarre M.", "Debenedetti F.", "Piantoni S.", "Mariella M.", "Zagni M.", "Bertaina F.", "Bonavia B.", "Di Vito M.", "Bozzarelli M.", "Gazzano G."];
 
         function App() {
             const [user, setUser] = useState(null);
@@ -143,29 +130,30 @@
             const [availabilities, setAvailabilities] = useState([]);
             const [loading, setLoading] = useState(true);
             const [fatalError, setFatalError] = useState("");
+            const [confirmDelete, setConfirmDelete] = useState(null); // Per modale conferma eliminazione
             
             const todayMonday = useMemo(() => getMonday(new Date()), []);
             const [currentWeekStart, setCurrentWeekStart] = useState(todayMonday);
-            const [activeDayMobile, setActiveDayMobile] = useState(formatDateLocal(new Date()));
+            const [activeDayMobile, setActiveDayMobile] = useState(formatLocalDate(new Date()));
             
             const [passInput, setPassInput] = useState("");
             const [passError, setPassError] = useState(false);
             const [selectedCandidate, setSelectedCandidate] = useState(null);
             const [customName, setCustomName] = useState("");
             
-            // Form States
-            const [formDate, setFormDate] = useState(formatDateLocal(new Date()));
-            const [formEndDate, setFormEndDate] = useState(formatDateLocal(new Date()));
+            const [formDate, setFormDate] = useState(formatLocalDate(new Date()));
+            const [formEndDate, setFormEndDate] = useState(formatLocalDate(new Date()));
             const [formStartH, setFormStartH] = useState(9);
             const [formEndH, setFormEndH] = useState(12);
             const [bulkMode, setBulkMode] = useState('single');
             const [statusMsg, setStatusMsg] = useState({ type: '', text: '' });
 
+            // Fix coerenza orario fine
             useEffect(() => {
                 if (formEndH <= formStartH) setFormEndH(formStartH + 1);
             }, [formStartH]);
 
-            // Inizializzazione Firebase & Auth
+            // Inizializzazione Firebase
             useEffect(() => {
                 let unsub = null;
                 const initFirebase = async () => {
@@ -175,22 +163,21 @@
                         const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
                         window.__firebaseApp = app;
                         const auth = getAuth(app);
-                        
                         await signInAnonymously(auth);
                         unsub = onAuthStateChanged(auth, (u) => {
                             setUser(u);
-                            if (u) console.log("Team member autenticato.");
+                            if (u) console.log("Sistema autenticato.");
                         });
                     } catch (err) {
-                        console.error("Errore inizializzazione:", err);
-                        setFatalError("Errore connessione Firebase: " + err.message);
+                        setFatalError("Errore Inizializzazione: " + err.message);
+                        setLoading(false);
                     }
                 };
                 initFirebase();
                 return () => { if (unsub) unsub(); };
             }, []);
 
-            // Firestore Sync (Persistenza reale)
+            // Sincronizzazione Dati
             useEffect(() => {
                 if (!user || !window.__firebaseApp) return;
                 const { getFirestore, collection, onSnapshot } = window.FirebaseSDK;
@@ -198,11 +185,10 @@
                 const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'availabilities');
                 
                 const unsubscribe = onSnapshot(collRef, (snapshot) => {
-                    const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    setAvailabilities(data);
-                    setLoading(false); // Sblocca solo quando i dati sono arrivati
+                    setAvailabilities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                    setLoading(false);
                 }, (err) => {
-                    console.error("Errore snapshot:", err);
+                    console.error("Firestore Permission/Network Error:", err);
                     setLoading(false);
                 });
                 
@@ -215,7 +201,7 @@
                     const d = new Date(currentWeekStart);
                     d.setDate(d.getDate() + i);
                     days.push({
-                        dateStr: formatDateLocal(d),
+                        dateStr: formatLocalDate(d),
                         label: d.toLocaleDateString('it-IT', { weekday: 'long' }),
                         shortLabel: d.toLocaleDateString('it-IT', { weekday: 'short' }).charAt(0).toUpperCase(),
                         dayNum: d.getDate(),
@@ -245,14 +231,20 @@
                     });
                 });
                 const totalSlots = 7 * HOURS.length;
-                const perc = Math.round(((totalSlots - gaps) / totalSlots) * 100) || 0;
-                return { gaps, perc };
+                return { gaps, perc: Math.round(((totalSlots - gaps) / totalSlots) * 100) || 0 };
             }, [coverageMap, weekDays]);
 
+            // --- LOGICA SALVATAGGIO ---
             const handleSaveTurn = async () => {
                 if (!user || !selectedCandidate || !window.__firebaseApp) return;
                 
-                setStatusMsg({ type: 'info', text: 'Salvataggio in corso...' });
+                // Validazione Range
+                if (bulkMode === 'range' && parseLocalDate(formEndDate) < parseLocalDate(formDate)) {
+                    setStatusMsg({ type: 'error', text: 'La data di fine non può essere precedente a quella di inizio.' });
+                    return;
+                }
+
+                setStatusMsg({ type: 'info', text: 'Esecuzione salvataggio...' });
 
                 try {
                     const { getFirestore, collection, addDoc } = window.FirebaseSDK;
@@ -261,93 +253,93 @@
                     
                     let datesToInsert = [];
                     switch (bulkMode) {
-                        case 'single': datesToInsert = [formDate]; break;
-                        case 'current_week': datesToInsert = getDatesInRange(todayMonday, new Date(new Date(todayMonday).getTime() + 6 * 86400000)); break;
-                        case 'next_week': 
-                            const nextMon = new Date(todayMonday.getTime() + 7 * 86400000);
-                            datesToInsert = getDatesInRange(nextMon, new Date(nextMon.getTime() + 6 * 86400000)); 
+                        case 'single': {
+                            datesToInsert = [formDate];
                             break;
-                        case 'range': datesToInsert = getDatesInRange(formDate, formEndDate); break;
+                        }
+                        case 'current_week': {
+                            const mon = getMonday(new Date());
+                            datesToInsert = getDatesInRange(formatLocalDate(mon), formatLocalDate(new Date(mon.getTime() + 6 * 86400000)));
+                            break;
+                        }
+                        case 'next_week': {
+                            const mon = new Date(getMonday(new Date()).getTime() + 7 * 86400000);
+                            datesToInsert = getDatesInRange(formatLocalDate(mon), formatLocalDate(new Date(mon.getTime() + 6 * 86400000)));
+                            break;
+                        }
+                        case 'range': {
+                            datesToInsert = getDatesInRange(formDate, formEndDate);
+                            break;
+                        }
                     }
 
-                    const savePromises = datesToInsert.map(dStr => 
-                        addDoc(collRef, {
-                            userId: user.uid,
-                            userName: String(selectedCandidate),
-                            date: dStr,
-                            start: Number(formStartH),
-                            end: Number(formEndH),
-                            timestamp: Date.now()
-                        })
-                    );
+                    if (datesToInsert.length === 0) throw new Error("Nessuna data valida generata.");
 
-                    await Promise.all(savePromises);
+                    const promises = datesToInsert.map(dStr => addDoc(collRef, {
+                        userId: user.uid,
+                        userName: String(selectedCandidate),
+                        date: dStr,
+                        start: Number(formStartH),
+                        end: Number(formEndH),
+                        timestamp: Date.now()
+                    }));
 
-                    // FEEDBACK CONFERMA
-                    setStatusMsg({ type: 'success', text: `✅ ${datesToInsert.length} turni salvati con successo!` });
-                    
-                    // Attendiamo un po' prima di cambiare vista per far leggere il messaggio
-                    setTimeout(() => {
-                        setView('main');
-                        setStatusMsg({ type: '', text: '' });
-                    }, 2000);
-                } catch (err) { 
+                    await Promise.all(promises);
+                    setStatusMsg({ type: 'success', text: `✅ ${datesToInsert.length} inserimenti effettuati!` });
+                    setTimeout(() => { setView('main'); setStatusMsg({ type: '', text: '' }); }, 2000);
+                } catch (err) {
                     console.error(err);
-                    setStatusMsg({ type: 'error', text: "Errore durante il salvataggio." }); 
+                    setStatusMsg({ type: 'error', text: "Errore tecnico: " + err.message });
                 }
             };
 
             const handleDelete = async (id) => {
-                if (!user || !window.__firebaseApp) return;
                 const { getFirestore, doc, deleteDoc } = window.FirebaseSDK;
                 const db = getFirestore(window.__firebaseApp);
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'availabilities', id));
+                setConfirmDelete(null);
             };
 
-            if (loading) return <div className="flex items-center justify-center min-h-screen"><p className="text-slate-400 font-medium pulse-soft">Caricamento dati Point...</p></div>;
-            if (fatalError) return <div className="flex items-center justify-center min-h-screen p-6"><div className="bg-white p-8 rounded-3xl shadow-xl max-w-sm text-center"><Icon name="AlertTriangle" size={32} className="text-red-500 mb-4 mx-auto"/><p className="text-slate-800 font-bold">{fatalError}</p></div></div>;
+            if (loading) return <div className="flex items-center justify-center min-h-screen p-10"><p className="text-slate-400 font-medium pulse-soft italic">Connessione al database Point...</p></div>;
+            if (fatalError) return <div className="flex items-center justify-center min-h-screen p-6 text-center"><div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 max-w-sm"><Icon name="AlertTriangle" size={32} className="text-red-500 mb-4 mx-auto"/><p className="text-slate-800 font-black uppercase text-xs">Errore di Caricamento</p><p className="mt-2 text-slate-500 text-sm">{fatalError}</p></div></div>;
 
-            // --- VISTA MAIN ---
+            // --- RENDER VISTE ---
             if (view === 'main') {
                 return (
                     <div className="min-h-screen bg-slate-50 font-strategic pb-24">
                         <AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} />
                         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-6 animate-fade">
+                            {/* Statistiche */}
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 font-data text-slate-900">
                                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
                                     <div className="p-3 bg-red-50 text-red-500 rounded-xl"><Icon name="AlertTriangle" size={20}/></div>
-                                    <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Gap Sett.</p><p className="text-2xl font-black">{stats.gaps}h</p></div>
+                                    <div><p className="text-[10px] font-black text-slate-400 uppercase leading-none mb-1">Gap Sett.</p><p className="text-2xl font-black">{stats.gaps}h</p></div>
                                 </div>
                                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
                                     <div className="p-3 bg-blue-50 text-blue-500 rounded-xl"><Icon name="CheckCircle" size={20}/></div>
-                                    <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Copertura</p><p className="text-2xl font-black">{stats.perc}%</p></div>
+                                    <div><p className="text-[10px] font-black text-slate-400 uppercase leading-none mb-1">Copertura</p><p className="text-2xl font-black">{stats.perc}%</p></div>
                                 </div>
                                 <div className="hidden md:flex bg-blue-600 p-6 rounded-2xl text-white shadow-xl items-center gap-5">
                                     <div className="p-3 bg-white/20 rounded-xl"><Icon name="Users" size={22}/></div>
-                                    <div><p className="text-[10px] font-black text-blue-100 uppercase tracking-widest leading-none mb-1">Collaboratori</p><p className="text-2xl font-black">{new Set(availabilities.map(a => a.userName)).size}</p></div>
+                                    <div><p className="text-[10px] font-black text-blue-100 uppercase mt-1">Collaboratori</p><p className="text-2xl font-black">{new Set(availabilities.map(a => a.userName)).size}</p></div>
                                 </div>
                             </div>
 
+                            {/* Calendario */}
                             <section className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                                 <div className="p-5 sm:p-8 bg-slate-900 text-white flex flex-col md:flex-row justify-between items-center gap-4">
                                     <div className="flex items-center gap-6">
                                         <button 
-                                            onClick={() => { const newMon = new Date(currentWeekStart); newMon.setDate(newMon.getDate() - 7); if (newMon >= todayMonday) setCurrentWeekStart(newMon); }} 
-                                            disabled={currentWeekStart <= todayMonday} 
-                                            className={`p-3 rounded-xl transition-all ${currentWeekStart <= todayMonday ? 'opacity-10 bg-white/5 cursor-not-allowed' : 'bg-white/20 hover:bg-white/30'}`}
+                                            onClick={() => { const n = new Date(currentWeekStart); n.setDate(n.getDate()-7); if(n >= todayMonday) setCurrentWeekStart(n); }} 
+                                            className={`p-3 rounded-xl transition-all ${currentWeekStart <= todayMonday ? 'opacity-10 pointer-events-none' : 'bg-white/20 hover:bg-white/30'}`}
                                         >
                                             <Icon name="ChevronLeft" size={24} className="text-white" />
                                         </button>
                                         <div className="text-center md:text-left min-w-[200px]">
                                             <h2 className="text-lg font-black uppercase italic tracking-tighter leading-none">{weekDays[0].dayNum} {weekDays[0].month} — {weekDays[6].dayNum} {weekDays[6].month}</h2>
-                                            <p className="text-[9px] font-bold text-blue-400 uppercase tracking-widest mt-1">Stato Copertura Point</p>
+                                            <p className="text-[9px] font-bold text-blue-400 uppercase mt-1">Situazione Point</p>
                                         </div>
-                                        <button 
-                                            onClick={() => { const newMon = new Date(currentWeekStart); newMon.setDate(newMon.getDate() + 7); setCurrentWeekStart(newMon); }} 
-                                            className="p-3 bg-white/20 hover:bg-white/30 rounded-xl transition-all"
-                                        >
-                                            <Icon name="ChevronRight" size={24} className="text-white" />
-                                        </button>
+                                        <button onClick={() => { const n = new Date(currentWeekStart); n.setDate(n.getDate()+7); setCurrentWeekStart(n); }} className="p-3 bg-white/20 hover:bg-white/30 rounded-xl"><Icon name="ChevronRight" size={24} className="text-white" /></button>
                                     </div>
                                     <div className="flex bg-white/10 p-1 rounded-xl">
                                         <button onClick={() => setCalendarMode('daily')} className={`px-5 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${calendarMode === 'daily' ? 'bg-white text-slate-900 shadow-sm' : 'text-white'}`}>Timeline</button>
@@ -367,7 +359,7 @@
                                                     <div className="h-10 flex items-center justify-center text-[10px] font-black text-slate-400 font-data bg-slate-50 rounded-lg">{hour}:00</div>
                                                     {weekDays.map(day => {
                                                         const present = coverageMap[day.dateStr]?.[hour] || [];
-                                                        return <div key={day.dateStr} className={`h-10 rounded-lg flex flex-col items-center justify-center transition-all ${present.length === 0 ? 'bg-red-50 border border-red-100' : 'bg-blue-600 text-white shadow-sm'}`}>{present.length > 0 && <span className="text-[7px] font-black uppercase">{present.length}</span>}</div>;
+                                                        return <div key={day.dateStr} className={`h-10 rounded-lg flex flex-col items-center justify-center transition-all ${present.length === 0 ? 'bg-red-50' : 'bg-blue-600 text-white shadow-sm'}`}>{present.length > 0 && <span className="text-[7px] font-black">{present.length}</span>}</div>;
                                                     })}
                                                 </div>
                                             ))}
@@ -377,23 +369,23 @@
                                             <div className="hidden lg:block overflow-x-auto">
                                                 <table className="w-full border-collapse">
                                                     <thead>
-                                                        <tr className="bg-slate-50/50"><th className="p-4 border-b border-r border-slate-100 w-24"></th>{weekDays.map(day => <th key={day.dateStr} className="p-4 text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-100 min-w-[140px]">{day.label}<span className="block text-[14px] text-blue-600 font-data">{day.dayNum}</span></th>)}</tr>
+                                                        <tr className="bg-slate-50/50"><th className="p-4 border-b border-r border-slate-100 w-24"></th>{weekDays.map(day => <th key={day.dateStr} className="p-4 text-[10px] font-black text-slate-500 uppercase border-b border-slate-100 min-w-[140px]">{day.label}<span className="block text-blue-600 font-data">{day.dayNum}</span></th>)}</tr>
                                                     </thead>
                                                     <tbody>
                                                         {HOURS.map(hour => (
                                                             <tr key={hour}><td className="p-3 text-[10px] font-black text-slate-400 border-r border-slate-100 text-center bg-slate-50/30 font-data">{hour}:00</td>{weekDays.map(day => {
                                                                 const present = coverageMap[day.dateStr]?.[hour] || [];
-                                                                return <td key={day.dateStr} className="p-1 border border-slate-50 h-20 relative"><div className={`w-full h-full rounded-xl transition-all p-2 flex flex-col justify-center items-center gap-0.5 ${present.length === 0 ? 'bg-red-50/20' : 'bg-blue-600 text-white shadow-sm'}`}>{present.slice(0, 2).map((p, idx) => <span key={idx} className="text-[9px] font-black uppercase tracking-tighter truncate w-full text-center leading-none">{p.userName}</span>)}{present.length > 2 && <span className="text-[7px] font-bold bg-black/10 px-1.5 py-0.5 rounded-full uppercase">+{present.length - 2}</span>}</div></td>;
+                                                                return <td key={day.dateStr} className="p-1 border border-slate-50 h-20 relative"><div className={`w-full h-full rounded-xl p-2 flex flex-col justify-center items-center gap-0.5 ${present.length === 0 ? 'bg-red-50/20' : 'bg-blue-600 text-white shadow-sm'}`}>{present.slice(0, 2).map((p, idx) => <span key={idx} className="text-[9px] font-black uppercase tracking-tighter truncate w-full text-center leading-none">{p.userName}</span>)}{present.length > 2 && <span className="text-[7px] font-bold bg-black/10 px-1.5 py-0.5 rounded-full uppercase">+{present.length - 2}</span>}</div></td>;
                                                             })}</tr>
                                                         ))}
                                                     </tbody>
                                                 </table>
                                             </div>
                                             <div className="lg:hidden">
-                                                <div className="flex p-2 bg-slate-100 rounded-2xl overflow-x-auto no-scrollbar gap-2 mb-6">{weekDays.map(day => <button key={day.dateStr} onClick={() => setActiveDayMobile(day.dateStr)} className={`flex flex-col items-center justify-center min-w-[58px] h-16 rounded-xl transition-all border-2 ${activeDayMobile === day.dateStr ? 'border-blue-600 bg-white text-blue-700 shadow-md' : 'border-transparent text-slate-400'}`}><span className="text-[8px] font-black uppercase mb-1">{day.shortLabel}</span><span className="text-base font-bold font-data">{day.dayNum}</span></button>)}</div>
+                                                <div className="flex p-2 bg-slate-100 rounded-2xl overflow-x-auto no-scrollbar gap-2 mb-6">{weekDays.map(day => <button key={day.dateStr} onClick={() => setActiveDayMobile(day.dateStr)} className={`flex flex-col items-center justify-center min-w-[58px] h-16 rounded-xl transition-all border-2 ${activeDayMobile === day.dateStr ? 'border-blue-600 bg-white text-blue-700 shadow-md scale-105' : 'border-transparent text-slate-400 opacity-60'}`}><span className="text-[8px] font-black uppercase mb-1">{day.shortLabel}</span><span className="text-base font-bold font-data">{day.dayNum}</span></button>)}</div>
                                                 <div className="space-y-2">{HOURS.map(hour => {
                                                     const present = coverageMap[activeDayMobile]?.[hour] || [];
-                                                    return <div key={hour} className="flex gap-4"><div className="w-10 pt-4 text-[10px] font-black text-slate-400 font-data">{hour}:00</div><div className="flex-1 pb-1"><div className={`w-full min-h-[56px] rounded-2xl p-4 flex flex-wrap items-center gap-2 border shadow-sm ${present.length === 0 ? 'bg-red-50 border-red-100 border-dashed' : 'bg-blue-600 text-white border-transparent'}`}>{present.length === 0 ? <span className="text-[9px] font-bold uppercase text-red-200 italic">Libero</span> : present.map((p, idx) => <span key={idx} className="text-[10px] font-black bg-black/10 px-2 py-1 rounded-lg uppercase">{p.userName}</span>)}</div></div></div>;
+                                                    return <div key={hour} className="flex gap-4"><div className="w-10 pt-4 text-[10px] font-black text-slate-400 font-data">{hour}:00</div><div className="flex-1 pb-1"><div className={`w-full min-h-[56px] rounded-2xl p-4 flex flex-wrap items-center gap-2 border shadow-sm ${present.length === 0 ? 'bg-red-50 border-red-100 border-dashed' : 'bg-blue-600 text-white'}`}>{present.length === 0 ? <span className="text-[9px] font-black text-red-200 italic">LIBERO</span> : present.map((p, idx) => <span key={idx} className="text-[10px] font-black bg-black/10 px-2 py-1 rounded-lg">{p.userName}</span>)}</div></div></div>;
                                                 })}</div>
                                             </div>
                                         </>
@@ -412,7 +404,6 @@
                 );
             }
 
-            // --- VISTA FORM ---
             if (view === 'entry_form') {
                 return (
                     <div className="min-h-screen bg-slate-50 font-strategic">
@@ -420,84 +411,35 @@
                         <main className="max-w-2xl mx-auto px-4 py-8 animate-fade">
                             <button onClick={() => setView('user_actions')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Indietro</button>
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border border-slate-100 space-y-10">
-                                <div>
-                                    <h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-950 leading-none">Nuovo Orario</h2>
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Pianifica la tua presenza al Point</p>
-                                </div>
-
+                                <div><h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-950">Nuovo Orario</h2><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Pianifica la tua presenza al Point</p></div>
                                 <div className="space-y-8">
                                     <div className="space-y-4">
-                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block text-center">Opzioni di inserimento rapido:</label>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase text-center block">Opzioni di inserimento rapido:</label>
                                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                                            {[
-                                                { id: 'single', label: 'Giorno Singolo' },
-                                                { id: 'current_week', label: 'Tutta questa sett.' },
-                                                { id: 'next_week', label: 'Tutta la prossima' },
-                                                { id: 'range', label: 'Intervallo date' }
-                                            ].map(mode => (
-                                                <button 
-                                                    key={mode.id}
-                                                    onClick={() => setBulkMode(mode.id)}
-                                                    className={`p-4 rounded-2xl text-[9px] font-black uppercase border-2 transition-all leading-tight ${bulkMode === mode.id ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-slate-50 border-slate-100 text-slate-400'}`}
-                                                >
-                                                    {mode.label}
-                                                </button>
+                                            {[ {id:'single',l:'Singolo'}, {id:'current_week',l:'Questa sett.'}, {id:'next_week',l:'Prox sett.'}, {id:'range',l:'Intervallo'} ].map(m => (
+                                                <button key={m.id} onClick={() => setBulkMode(m.id)} className={`p-4 rounded-2xl text-[9px] font-black uppercase border-2 transition-all leading-tight ${bulkMode === m.id ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>{m.l}</button>
                                             ))}
                                         </div>
                                     </div>
-
                                     <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-6">
                                         {(bulkMode === 'single' || bulkMode === 'range') && (
-                                            <div>
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">{bulkMode === 'range' ? 'Inizia il' : 'Giorno selezionato'}</label>
-                                                <input type="date" value={formDate} min={formatDateLocal(new Date())} onChange={(e) => setFormDate(e.target.value)} className="w-full px-5 py-4 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none"/>
-                                            </div>
+                                            <div><label className="text-[10px] font-black text-slate-400 uppercase block mb-2">{bulkMode==='range'?'Dal':'Giorno'}</label><input type="date" value={formDate} min={formatLocalDate(new Date())} onChange={(e)=>setFormDate(e.target.value)} className="w-full px-5 py-4 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none shadow-sm"/></div>
                                         )}
                                         {bulkMode === 'range' && (
-                                            <div>
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Finisce il</label>
-                                                <input type="date" value={formEndDate} min={formDate} onChange={(e) => setFormEndDate(e.target.value)} className="w-full px-5 py-4 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none"/>
-                                            </div>
+                                            <div><label className="text-[10px] font-black text-slate-400 uppercase block mb-2">Al</label><input type="date" value={formEndDate} min={formDate} onChange={(e)=>setFormEndDate(e.target.value)} className="w-full px-5 py-4 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none shadow-sm"/></div>
                                         )}
                                         {(bulkMode === 'current_week' || bulkMode === 'next_week') && (
-                                            <div className="sm:col-span-2 text-center py-4 flex flex-col items-center">
-                                                <Icon name="CalendarDays" size={24} className="text-blue-500 mb-3"/>
-                                                <p className="text-sm font-bold text-blue-600 uppercase tracking-tight">
-                                                    {bulkMode === 'current_week' ? "Verranno aggiunti 7 turni (Lunedì-Domenica) per questa settimana." : "Verranno aggiunti 7 turni per la settimana prossima."}
-                                                </p>
-                                            </div>
+                                            <div className="sm:col-span-2 text-center py-4 flex flex-col items-center italic text-blue-600 font-bold text-sm uppercase tracking-tight"><Icon name="CalendarDays" size={24} className="mb-2"/> {bulkMode==='current_week'?'Applica a questa settimana (Lun-Dom)':'Applica alla prossima settimana (Lun-Dom)'}</div>
                                         )}
                                     </div>
-
                                     <div className="grid grid-cols-2 gap-6">
-                                        <div>
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Dalle ore</label>
-                                            <select value={formStartH} onChange={(e) => setFormStartH(Number(e.target.value))} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none">
-                                                {HOURS.map(h => <option key={h} value={h}>{h}:00</option>)}
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Alle ore</label>
-                                            <select value={formEndH} onChange={(e) => setFormEndH(Number(e.target.value))} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:border-blue-500 outline-none">
-                                                {HOURS.filter(h => h > formStartH).map(h => <option key={h} value={h}>{h}:00</option>)}
-                                                <option value="20">20:00</option>
-                                            </select>
-                                        </div>
+                                        <div><label className="text-[10px] font-black text-slate-400 uppercase block mb-2">Dalle ore</label><select value={formStartH} onChange={(e)=>setFormStartH(Number(e.target.value))} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none">{HOURS.map(h => <option key={h} value={h}>{h}:00</option>)}</select></div>
+                                        <div><label className="text-[10px] font-black text-slate-400 uppercase block mb-2">Alle ore</label><select value={formEndH} onChange={(e)=>setFormEndH(Number(e.target.value))} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none">{HOURS.filter(h => h > formStartH).map(h => <option key={h} value={h}>{h}:00</option>)}</select></div>
                                     </div>
-
                                     {statusMsg.text && (
-                                        <div className={`p-6 rounded-[2rem] text-[10px] font-black uppercase text-center animate-fade ${statusMsg.type === 'error' ? 'bg-red-50 text-red-600' : statusMsg.type === 'success' ? 'bg-green-100 text-green-700 border-2 border-green-200 shadow-sm scale-105' : 'bg-blue-50 text-blue-600 shadow-inner'}`}>
-                                            {statusMsg.text}
-                                        </div>
+                                        <div className={`p-6 rounded-[2rem] text-[10px] font-black uppercase text-center animate-fade ${statusMsg.type === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : statusMsg.type === 'success' ? 'bg-green-100 text-green-700 border border-green-200 shadow-sm' : 'bg-blue-50 text-blue-600 border border-blue-100'}`}>{statusMsg.text}</div>
                                     )}
-
-                                    <button 
-                                        onClick={handleSaveTurn} 
-                                        disabled={statusMsg.type === 'info' || statusMsg.type === 'success'} 
-                                        className="w-full bg-blue-600 text-white py-6 rounded-[2.5rem] font-black uppercase text-xs tracking-widest shadow-2xl hover:bg-blue-700 transition-all disabled:opacity-50 active:scale-95"
-                                    >
-                                        {statusMsg.type === 'info' ? 'Inserimento in corso...' : statusMsg.type === 'success' ? 'Inserito!' : 'Conferma e Inserisci'}
-                                    </button>
+                                    <button onClick={handleSaveTurn} disabled={statusMsg.type === 'info' || statusMsg.type === 'success'} className="w-full bg-blue-600 text-white py-6 rounded-[2.5rem] font-black uppercase text-xs tracking-widest shadow-2xl hover:bg-blue-700 transition-all disabled:opacity-50 active:scale-95">{statusMsg.type === 'info' ? 'Salvataggio...' : statusMsg.type === 'success' ? 'Salvato!' : 'Conferma e Inserisci'}</button>
                                 </div>
                             </div>
                         </main>
@@ -505,24 +447,53 @@
                 );
             }
 
-            // Selezione Nome
+            // --- ALTRE VISTE (RE-DESIGNED) ---
             if (view === 'select_name') {
                 const dynamicCandidates = Array.from(new Set([...INITIAL_CANDIDATES, ...availabilities.map(a => a.userName)])).sort((a, b) => String(a).localeCompare(String(b)));
-                return <div className="min-h-screen bg-slate-50 font-strategic"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="max-w-4xl mx-auto px-4 py-12 animate-fade"><button onClick={() => setView('main')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Calendario</button><div className="bg-white p-10 rounded-3xl border border-slate-200 shadow-xl space-y-10"><h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-950 text-center">Chi sei?</h2><div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 flex flex-col sm:flex-row gap-4 items-end"><div className="flex-1 w-full"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Nuovo Collaboratore</label><input type="text" placeholder="Nome Cognome" value={customName} onChange={(e) => setCustomName(e.target.value)} className="w-full px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 transition-all shadow-sm"/></div><button onClick={() => { if(customName.trim()) { setSelectedCandidate(customName.trim()); setView('user_actions'); } }} className="w-full sm:w-auto bg-blue-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-[10px] shadow-lg">Inizia</button></div><div className="grid grid-cols-2 md:grid-cols-3 gap-3">{dynamicCandidates.map(name => <button key={name} onClick={() => { setSelectedCandidate(name); setView('user_actions'); }} className="p-5 border-2 border-slate-100 rounded-2xl text-xs font-black uppercase hover:border-blue-500 hover:bg-blue-50 transition-all text-left flex justify-between items-center group shadow-sm bg-white"><span>{String(name)}</span><Icon name="ChevronRight" size={14} className="text-slate-300 group-hover:text-blue-600 transition-colors"/></button>)}</div></div></main></div>;
+                return <div className="min-h-screen bg-slate-50 font-strategic"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="max-w-4xl mx-auto px-4 py-12 animate-fade"><button onClick={() => setView('main')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Calendario</button><div className="bg-white p-10 rounded-3xl border border-slate-200 shadow-xl space-y-10"><h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-950 text-center">Identificati</h2><div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 flex flex-col sm:flex-row gap-4 items-end"><div className="flex-1 w-full"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Nuovo Collaboratore</label><input type="text" placeholder="Nome Cognome" value={customName} onChange={(e) => setCustomName(e.target.value)} className="w-full px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 transition-all shadow-sm"/></div><button onClick={() => { if(customName.trim()) { setSelectedCandidate(customName.trim()); setView('user_actions'); } }} className="w-full sm:w-auto bg-blue-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-[10px] shadow-lg">Inizia</button></div><div className="grid grid-cols-2 md:grid-cols-3 gap-3">{dynamicCandidates.map(name => <button key={name} onClick={() => { setSelectedCandidate(name); setView('user_actions'); }} className="p-5 border-2 border-slate-100 rounded-2xl text-xs font-black uppercase hover:border-blue-500 hover:bg-blue-50 transition-all text-left flex justify-between items-center group shadow-sm bg-white"><span>{String(name)}</span><Icon name="ChevronRight" size={14} className="text-slate-300 group-hover:text-blue-600"/></button>)}</div></div></main></div>;
             }
 
             if (view === 'user_actions') {
-                return <div className="min-h-screen bg-slate-50 font-strategic"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="max-w-xl mx-auto px-4 py-12 animate-fade"><button onClick={() => setView('select_name')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Indietro</button><div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 text-center space-y-10"><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Sei entrato come:</p><h2 className="text-3xl font-black uppercase italic tracking-tighter text-blue-900 leading-none">{selectedCandidate}</h2></div><div className="grid gap-4"><button onClick={() => setView('entry_form')} className="p-8 bg-blue-600 text-white rounded-[2rem] flex items-center justify-between group hover:bg-blue-700 transition-all shadow-xl"><div className="flex items-center gap-6 text-left"><div className="p-4 bg-white/20 rounded-2xl"><Icon name="Plus" size={28}/></div><div><p className="text-sm font-black uppercase leading-tight">Nuovo Orario</p><p className="text-[10px] opacity-70 mt-1">Aggiungi disponibilità</p></div></div><Icon name="ChevronRight" size={20} /></button><button onClick={() => setView('my_turns')} className="p-8 bg-slate-900 text-white rounded-[2rem] flex items-center justify-between group hover:bg-black transition-all shadow-xl"><div className="flex items-center gap-6 text-left"><div className="p-4 bg-white/20 rounded-2xl"><Icon name="Clock" size={28}/></div><div><p className="text-sm font-black uppercase leading-tight">I Miei Turni</p><p className="text-[10px] opacity-70 mt-1">Riepilogo e cancella</p></div></div><Icon name="ChevronRight" size={20} /></button></div></div></main></div>;
+                return <div className="min-h-screen bg-slate-50 font-strategic"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="max-w-xl mx-auto px-4 py-12 animate-fade"><button onClick={() => setView('select_name')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Indietro</button><div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 text-center space-y-10"><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Benvenuto</p><h2 className="text-3xl font-black uppercase italic tracking-tighter text-blue-900 leading-none">{selectedCandidate}</h2></div><div className="grid gap-4"><button onClick={() => setView('entry_form')} className="p-8 bg-blue-600 text-white rounded-[2rem] flex items-center justify-between group hover:bg-blue-700 transition-all shadow-xl"><div className="flex items-center gap-6 text-left"><div className="p-4 bg-white/20 rounded-2xl"><Icon name="Plus" size={28}/></div><div><p className="text-sm font-black uppercase leading-tight">Nuovo Orario</p><p className="text-[10px] opacity-70 mt-1">Pianifica disponibilità</p></div></div><Icon name="ChevronRight" size={20} /></button><button onClick={() => setView('my_turns')} className="p-8 bg-slate-900 text-white rounded-[2rem] flex items-center justify-between group hover:bg-black transition-all shadow-xl"><div className="flex items-center gap-6 text-left"><div className="p-4 bg-white/20 rounded-2xl"><Icon name="Clock" size={28}/></div><div><p className="text-sm font-black uppercase leading-tight">I Miei Turni</p><p className="text-[10px] opacity-70 mt-1">Gestione e cronologia</p></div></div><Icon name="ChevronRight" size={20} /></button></div></div></main></div>;
             }
 
             if (view === 'admin_auth') {
-                return <div className="min-h-screen bg-slate-50 font-strategic flex flex-col"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="flex-1 flex items-center justify-center p-6 animate-fade"><div className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-2xl w-full max-w-md text-center"><Icon name="Lock" size={48} className="text-blue-600 mb-8 mx-auto" /><h2 className="text-2xl font-black uppercase italic tracking-tighter mb-8 leading-none">Area Riservata</h2><form onSubmit={(e) => { e.preventDefault(); if(passInput === 'ppppp') setView('admin'); else setPassError(true); }} className="space-y-4"><input type="password" autoFocus placeholder="••••••" value={passInput} onChange={(e) => setPassInput(e.target.value)} className={`w-full px-6 py-6 bg-slate-50 border-2 rounded-2xl text-center text-2xl font-bold outline-none ${passError ? 'border-red-200 focus:border-red-500' : 'border-slate-100 focus:border-blue-500 shadow-inner'}`} /><button type="submit" className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-transform">Accedi</button><button type="button" onClick={() => setView('main')} className="w-full text-[10px] font-black text-slate-400 py-2 uppercase tracking-widest">Annulla</button></form></div></main></div>;
+                return <div className="min-h-screen bg-slate-50 font-strategic flex flex-col"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="flex-1 flex items-center justify-center p-6 animate-fade"><div className="bg-white p-12 rounded-[3rem] border border-slate-200 shadow-2xl w-full max-w-md text-center"><Icon name="Lock" size={48} className="text-blue-600 mb-8 mx-auto" /><h2 className="text-2xl font-black uppercase italic tracking-tighter mb-8 leading-none">Accesso Amministratore</h2><form onSubmit={(e) => { e.preventDefault(); if(passInput === 'ppppp') setView('admin'); else setPassError(true); }} className="space-y-4"><input type="password" autoFocus placeholder="••••••" value={passInput} onChange={(e) => setPassInput(e.target.value)} className={`w-full px-6 py-6 bg-slate-50 border-2 rounded-2xl text-center text-2xl font-bold outline-none ${passError ? 'border-red-200 focus:border-red-500 shadow-red-50' : 'border-slate-100 focus:border-blue-500 shadow-inner'}`} /><button type="submit" className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl transition-all active:scale-95">Accedi</button><button type="button" onClick={() => setView('main')} className="w-full text-[10px] font-black text-slate-400 py-2 uppercase tracking-widest">Annulla</button></form></div></main></div>;
             }
 
             if (view === 'my_turns' || view === 'admin') {
                 const turns = view === 'admin' ? availabilities : availabilities.filter(a => a.userName === selectedCandidate);
                 turns.sort((a, b) => b.timestamp - a.timestamp);
-                return <div className="min-h-screen bg-slate-50 font-strategic"><AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} /><main className="max-w-4xl mx-auto px-4 py-12 animate-fade"><button onClick={() => setView(view === 'admin' ? 'main' : 'user_actions')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Indietro</button><div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 space-y-8"><h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-900">{view === 'admin' ? 'Database Totale' : 'I Tuoi Orari'}</h2><div className="space-y-4">{turns.length === 0 ? <p className="text-center py-24 text-slate-300 font-black uppercase text-xs tracking-widest italic opacity-50">Nessun dato registrato</p> : turns.map(t => <div key={t.id} className="p-6 bg-slate-50 rounded-[1.5rem] border border-slate-100 flex items-center justify-between shadow-sm group"><div><p className="text-xs font-black uppercase text-blue-900">{t.userName}</p><p className="text-sm font-bold text-slate-600 mt-1">{new Date(t.date).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}</p><p className="text-[10px] font-data font-bold text-blue-500 uppercase mt-2 tracking-widest flex items-center gap-2"><Icon name="Clock" size={12}/>{t.start}:00 — {t.end}:00</p></div><button onClick={() => handleDelete(t.id)} className="p-4 text-slate-300 hover:text-red-500 transition-all bg-white rounded-2xl shadow-sm border border-slate-100 hover:shadow-md active:scale-90"><Icon name="Trash2" size={20} /></button></div>)}</div></div></main></div>;
+                return (
+                    <div className="min-h-screen bg-slate-50 font-strategic">
+                        <AppHeader onLogoClick={() => setView('main')} onLockClick={() => setView('admin_auth')} />
+                        <main className="max-w-4xl mx-auto px-4 py-12 animate-fade">
+                            <button onClick={() => setView(view === 'admin' ? 'main' : 'user_actions')} className="flex items-center gap-2 text-slate-400 hover:text-blue-600 font-bold uppercase text-[10px] mb-8"><Icon name="ArrowLeft" size={14}/> Indietro</button>
+                            <div className="bg-white p-10 rounded-[3rem] shadow-xl border border-slate-100 space-y-8">
+                                <h2 className="text-2xl font-black uppercase italic tracking-tighter text-blue-900">{view === 'admin' ? 'Database Point' : 'Gestisci i tuoi orari'}</h2>
+                                <div className="space-y-4">
+                                    {turns.length === 0 ? <p className="text-center py-24 text-slate-300 font-black uppercase text-xs tracking-widest opacity-50 italic">Nessun dato registrato</p> : turns.map(t => (
+                                        <div key={t.id} className="p-6 bg-slate-50 rounded-[1.5rem] border border-slate-100 flex items-center justify-between shadow-sm relative overflow-hidden group transition-all">
+                                            <div>
+                                                <p className="text-xs font-black uppercase text-blue-900">{t.userName}</p>
+                                                <p className="text-sm font-bold text-slate-600 mt-1 capitalize">{parseLocalDate(t.date).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+                                                <p className="text-[10px] font-data font-bold text-blue-500 uppercase mt-2 tracking-widest flex items-center gap-2"><Icon name="Clock" size={12}/>{t.start}:00 — {t.end}:00</p>
+                                            </div>
+                                            {confirmDelete === t.id ? (
+                                                <div className="flex gap-2 animate-fade">
+                                                    <button onClick={() => handleDelete(t.id)} className="bg-red-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg">Elimina</button>
+                                                    <button onClick={() => setConfirmDelete(null)} className="bg-slate-200 text-slate-500 px-4 py-2 rounded-xl text-[10px] font-black uppercase">X</button>
+                                                </div>
+                                            ) : (
+                                                <button onClick={() => setConfirmDelete(t.id)} className="p-4 text-slate-300 hover:text-red-500 bg-white rounded-2xl shadow-sm border border-slate-100 transition-all active:scale-90"><Icon name="Trash2" size={20} /></button>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+                );
             }
 
             return null;
